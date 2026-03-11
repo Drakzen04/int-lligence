@@ -501,23 +501,16 @@ export default function App() {
       try {
         const encodedPrompt = encodeURIComponent(textToSend);
         const seed = Math.floor(Math.random() * 999999);
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=flux`;
+        // URL directe sans crossOrigin — Pollinations bloque le preload CORS
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
 
-        // Attendre que l'image soit bien chargée
-        await new Promise<void>((resolve, reject) => {
-          const img = new window.Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => resolve();
-          img.onerror = () => reject(new Error("Impossible de charger l'image"));
-          img.src = imageUrl;
-          // Timeout de sécurité 30 secondes
-          setTimeout(() => reject(new Error("Timeout")), 30000);
-        });
+        // On attend 3s que Pollinations commence à générer, puis on affiche directement
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
         setMessages(prev => [...prev, {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: `✅ Image générée avec succès !\n\n**Prompt :** *${textToSend}*\n\n> Propulsé par [Pollinations.ai](https://pollinations.ai) — Modèle FLUX`,
+          content: `✅ **Image générée !**\n\n**Prompt :** *${textToSend}*\n\n> 🎨 Propulsé par [Pollinations.ai](https://pollinations.ai) — Modèle FLUX`,
           timestamp: Date.now(),
           image: imageUrl,
           suggestions: [
@@ -530,7 +523,7 @@ export default function App() {
         setMessages(prev => [...prev, {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: "❌ **Erreur de génération.** Le service Pollinations.ai est peut-être temporairement indisponible. Réessaie dans quelques secondes.",
+          content: "❌ **Erreur de génération.** Réessaie dans quelques secondes.",
           timestamp: Date.now(),
         }]);
       } finally {
