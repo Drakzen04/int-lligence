@@ -702,54 +702,53 @@ export default function App() {
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  // ─── Génération d'images ultra-rapide ───────────────────────────────────
+  // ─── Génération d'images via Puter.js (FLUX Schnell ~2-4s, sans clé API) ──
   const generateImageFast = async (prompt: string): Promise<string> => {
-    // Strategy: try multiple fast sources in parallel, use first success
-    const seed = Math.floor(Math.random() * 999999);
-    const encoded = encodeURIComponent(prompt);
-
-    // Source 1: Pollinations FLUX (fastest, usually ~3-5s)
-    const tryPollinations = async (): Promise<string> => {
-      const url = `https://image.pollinations.ai/prompt/${encoded}?model=flux&width=1024&height=1024&nologo=true&seed=${seed}&enhance=false`;
-      // Poll until image is ready (max 15s)
+    const puter = (window as any).puter;
+    if (!puter?.ai?.txt2img) {
+      // Fallback Pollinations si puter pas encore chargé
+      const encoded = encodeURIComponent(prompt);
+      const seed = Math.floor(Math.random() * 999999);
+      const url = `https://image.pollinations.ai/prompt/${encoded}?model=flux&width=1024&height=1024&nologo=true&seed=${seed}`;
       for (let i = 0; i < 8; i++) {
         await new Promise(r => setTimeout(r, i === 0 ? 2500 : 1500));
-        const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) continue;
-        const blob = await res.blob();
-        if (blob.size < 8000) continue;
-        return await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          if (blob.size < 8000) continue;
+          return await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch { continue; }
       }
-      throw new Error('pollinations timeout');
-    };
+      throw new Error('Fallback timeout');
+    }
 
-    // Source 2: Pollinations with SDXL model (fallback)
-    const tryPollinationsSdxl = async (): Promise<string> => {
-      await new Promise(r => setTimeout(r, 1000)); // slight delay to let flux try first
-      const url = `https://image.pollinations.ai/prompt/${encoded}?model=turbo&width=1024&height=1024&nologo=true&seed=${seed + 1}`;
-      for (let i = 0; i < 8; i++) {
-        await new Promise(r => setTimeout(r, i === 0 ? 3000 : 1500));
-        const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) continue;
-        const blob = await res.blob();
-        if (blob.size < 8000) continue;
-        return await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      }
-      throw new Error('turbo timeout');
-    };
+    // ── Puter.js FLUX Schnell — le plus rapide (~2-4s) ──────────────────────
+    const img = await puter.ai.txt2img(prompt, {
+      model: 'flux-schnell', // modèle ultra-rapide
+      quality: 'medium',
+    });
 
-    // Race both sources — fastest wins
-    return await Promise.any([tryPollinations(), tryPollinationsSdxl()]);
+    // img.src est une URL blob ou data URL — on la convertit en base64
+    if (!img?.src) throw new Error('Puter image generation failed');
+
+    // Si c'est déjà une data URL, on la retourne directement
+    if (img.src.startsWith('data:')) return img.src;
+
+    // Sinon on fetch le blob et on convertit
+    const res = await fetch(img.src);
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   };
 
   // ─── FONCTION PRINCIPALE D'ENVOI (Groq) ──────────────────────────────────
@@ -976,33 +975,46 @@ export default function App() {
     recognition.interimResults = true;
     recognitionRef.current = recognition;
 
+    // Transcription stockée en variables locales — PAS dans l'état input
     let finalTranscript = '';
+    let interimTranscript = '';
 
-    recognition.onstart = () => { setIsListening(true); };
+    recognition.onstart = () => {
+      setIsListening(true);
+      setInput(''); // vider le champ au démarrage
+    };
 
     recognition.onresult = (event: any) => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
-      let interim = '';
+      interimTranscript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
           finalTranscript += event.results[i][0].transcript + ' ';
         } else {
-          interim = event.results[i][0].transcript;
+          interimTranscript = event.results[i][0].transcript;
         }
       }
-      setInput((finalTranscript + interim).trim());
 
-      // 2.5 second silence → auto send
+      // Afficher uniquement le texte interim dans le champ (feedback visuel)
+      // mais NE PAS y écrire le final — le final sera envoyé directement
+      const display = (finalTranscript + interimTranscript).trim();
+      setInput(display); // juste pour l'affichage live dans le champ
+
+      // Silence détecté après 2s → envoyer immédiatement sans attendre
       silenceTimerRef.current = setTimeout(() => {
-        recognition.stop();
-        const textToSendNow = (finalTranscript + interim).trim();
-        if (textToSendNow) {
-          setInput('');
+        const textToSend = (finalTranscript + interimTranscript).trim();
+        finalTranscript = '';
+        interimTranscript = '';
+
+        recognition.stop(); // stoppe le micro
+
+        if (textToSend) {
+          setInput('');     // vider le champ
           setIsListening(false);
-          handleSendVoice(textToSendNow);
+          handleSendVoice(textToSend); // ← envoi direct + réponse vocale
         }
-      }, 2500);
+      }, 2000); // 2s de silence = envoi
     };
 
     recognition.onend = () => {
@@ -1012,7 +1024,10 @@ export default function App() {
 
     recognition.onerror = (e: any) => {
       setIsListening(false);
-      if (e.error !== 'no-speech') setNotification("Erreur micro : " + e.error);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (e.error !== 'no-speech' && e.error !== 'aborted') {
+        setNotification("Erreur micro : " + e.error);
+      }
     };
 
     recognition.start();
@@ -1024,53 +1039,113 @@ export default function App() {
     setIsListening(false);
   };
 
-  // Version vocale de handleSend qui lit la réponse à voix haute
+  // ─── handleSendVoice — Envoi direct + lecture immédiate de la réponse ────
   const handleSendVoice = async (text: string) => {
     if (!text.trim() || isLoading) return;
     if (!GROQ_API_KEY || GROQ_API_KEY.length < 10) return;
 
-    const userMessage: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: Date.now() };
+    // 1. Annuler toute lecture en cours
+    window.speechSynthesis.cancel();
+    setIsSpeaking(null);
+
+    // 2. Ajouter le message utilisateur dans le chat
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
+    };
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
     try {
       const groq = getGroqClient();
-      const systemPrompt = `${PERSONAS[persona]}\n${SYSTEM_INSTRUCTION_BASE}\nIMPORTANT MODE VOCAL : Réponds de façon courte, naturelle et conversationnelle, comme si tu parlais. Évite les listes à puces, les titres markdown. Réponds en 2-4 phrases maximum sauf si on te demande un détail.`;
-      const conversationHistory = messages.slice(-10).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      const systemPrompt = `${PERSONAS[persona]}
+${SYSTEM_INSTRUCTION_BASE}
+IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEMENT à l'oral, en phrases courtes et naturelles. PAS de markdown, PAS de listes, PAS de titres, PAS de code. Réponds en 1-3 phrases maximum, comme un humain qui parle. Sois direct et chaleureux.`;
+
+      // Historique récent seulement (10 derniers)
+      const history = messages.slice(-10).map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      }));
+
       const completion = await groq.chat.completions.create({
         model: GROQ_TEXT_MODEL,
-        messages: [{ role: 'system', content: systemPrompt }, ...conversationHistory, { role: 'user', content: text }],
-        max_tokens: 512,
-        temperature: 0.7,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...history,
+          { role: 'user', content: text },
+        ],
+        max_tokens: 300, // réponse courte pour être lu vite
+        temperature: 0.75,
         stream: false,
       });
 
-      let content = completion.choices[0]?.message?.content || "Je n'ai pas pu répondre.";
-      content = content.replace(/\[SUGGESTIONS:.*?\]/g, '').trim();
+      let content = completion.choices[0]?.message?.content || "Désolé, je n'ai pas pu répondre.";
+      // Nettoyer tout formatage markdown
+      content = content
+        .replace(/\[SUGGESTIONS:.*?\]/gs, '')
+        .replace(/#{1,6}\s/g, '')
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        .replace(/\*(.*?)\*/g, '$1')
+        .replace(/`{1,3}[^`]*`{1,3}/g, '')
+        .replace(/^\s*[-•*]\s+/gm, '')
+        .replace(/
+{2,}/g, ' ')
+        .trim();
 
-      const assistantMessage: Message = { id: (Date.now()+1).toString(), role: 'assistant', content, timestamp: Date.now() };
-      setMessages(prev => [...prev, assistantMessage]);
-
-      // Lecture automatique de la réponse
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(content);
-      if (selectedVoice) {
-        const voice = availableVoices.find(v => v.name === selectedVoice);
-        if (voice) utterance.voice = voice;
-      } else { utterance.lang = 'fr-FR'; }
-      utterance.rate = voiceSpeed;
-      utterance.pitch = voicePitch;
-      setIsSpeaking(assistantMessage.id);
-      utterance.onend = () => {
-        setIsSpeaking(null);
-        // Relancer l'écoute automatiquement si mode mains libres
-        if (isAutoSpeak) setTimeout(() => startVoiceInput(), 500);
+      // 3. Ajouter la réponse dans le chat
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
       };
-      window.speechSynthesis.speak(utterance);
-    } catch (err) {
-      setNotification("Erreur lors de la réponse vocale.");
-    } finally {
+      setMessages(prev => [...prev, assistantMessage]);
       setIsLoading(false);
+
+      // 4. Lire la réponse IMMÉDIATEMENT à voix haute
+      const speak = () => {
+        const utterance = new SpeechSynthesisUtterance(content);
+        // Sélectionner la voix
+        if (selectedVoice) {
+          const voice = availableVoices.find(v => v.name === selectedVoice);
+          if (voice) utterance.voice = voice;
+        } else {
+          // Chercher une voix française naturelle
+          const frVoice = availableVoices.find(v => v.lang.startsWith('fr'));
+          if (frVoice) utterance.voice = frVoice;
+          else utterance.lang = 'fr-FR';
+        }
+        utterance.rate = voiceSpeed;
+        utterance.pitch = voicePitch;
+        utterance.volume = 1;
+
+        setIsSpeaking(assistantMessage.id);
+
+        utterance.onend = () => {
+          setIsSpeaking(null);
+          // Relancer le micro automatiquement si mode mains libres actif
+          if (isAutoSpeak) {
+            setTimeout(() => startVoiceInput(), 600);
+          }
+        };
+
+        utterance.onerror = () => {
+          setIsSpeaking(null);
+        };
+
+        window.speechSynthesis.speak(utterance);
+      };
+
+      // Petit délai pour laisser le navigateur mobile initialiser TTS
+      setTimeout(speak, 150);
+
+    } catch (err: any) {
+      setIsLoading(false);
+      setNotification("❌ Erreur lors de la réponse vocale.");
+      console.error('handleSendVoice error:', err);
     }
   };
 
