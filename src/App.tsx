@@ -51,68 +51,96 @@ function loadChartJs(cb: () => void) {
 }
 
 const GraphRenderer = ({ graphJson }: { graphJson: string }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const [error, setError] = useState('');
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let data: any;
     try { data = JSON.parse(graphJson); } catch { setError('JSON invalide'); return; }
 
     const buildChart = () => {
-      if (!canvasRef.current) return;
-      if (chartRef.current) { try { chartRef.current.destroy(); } catch {} chartRef.current = null; }
+      // Find or create the canvas fresh each time
+      if (!containerRef.current) return;
+      if (chartRef.current) {
+        try { chartRef.current.destroy(); } catch {}
+        chartRef.current = null;
+      }
+      // Remove old canvas and create fresh one to avoid "canvas already in use" error
+      containerRef.current.innerHTML = '';
+      const canvas = document.createElement('canvas');
+      canvas.style.maxHeight = '300px';
+      containerRef.current.appendChild(canvas);
+
       const Chart = (window as any).Chart;
       if (!Chart) return;
+
       const COLORS = ['#6366f1','#22d3ee','#f59e0b','#10b981','#f43f5e','#ec4899','#8b5cf6'];
       const colors = (data.datasets || []).map((d: any, i: number) => d.color || COLORS[i % COLORS.length]);
+      const isPieLike = data.type === 'pie' || data.type === 'doughnut';
+
       try {
-        chartRef.current = new Chart(canvasRef.current, {
+        chartRef.current = new Chart(canvas, {
           type: data.type || 'bar',
           data: {
             labels: data.labels || [],
             datasets: (data.datasets || []).map((ds: any, i: number) => ({
               label: ds.label || '',
               data: ds.data || [],
-              borderColor: colors[i],
-              backgroundColor: data.type === 'pie' || data.type === 'doughnut'
+              borderColor: isPieLike ? colors : colors[i],
+              backgroundColor: isPieLike
                 ? colors.map((c: string) => c + 'cc')
                 : colors[i] + '55',
               borderWidth: 2,
               tension: 0.4,
               fill: data.type === 'line',
               pointBackgroundColor: colors[i],
-              pointRadius: 5,
+              pointRadius: 4,
               pointHoverRadius: 7,
             })),
           },
           options: {
             responsive: true,
-            maintainAspectRatio: true,
-            animation: { duration: 800, easing: 'easeInOutQuart' },
+            maintainAspectRatio: false,
+            animation: { duration: 900, easing: 'easeInOutQuart' },
             plugins: {
-              legend: { labels: { color: '#ffffff99', font: { size: 11 }, padding: 16 } },
-              title: { display: !!data.title, text: data.title || '', color: '#ffffffcc', font: { size: 13, weight: 'bold' }, padding: { bottom: 12 } },
+              legend: { display: true, labels: { color: '#ffffff99', font: { size: 11 }, padding: 14, boxWidth: 12 } },
+              title: { display: !!data.title, text: data.title || '', color: '#ffffffcc', font: { size: 13, weight: 'bold' as const }, padding: { bottom: 10 } },
               tooltip: { backgroundColor: '#1e1e2e', titleColor: '#fff', bodyColor: '#ffffff99', borderColor: '#ffffff22', borderWidth: 1, padding: 10, cornerRadius: 8 },
             },
-            scales: (data.type === 'pie' || data.type === 'doughnut') ? {} : {
+            scales: isPieLike ? {} : {
               x: { ticks: { color: '#ffffff66', font: { size: 10 } }, grid: { color: '#ffffff0d' }, border: { color: '#ffffff11' } },
               y: { ticks: { color: '#ffffff66', font: { size: 10 } }, grid: { color: '#ffffff0d' }, border: { color: '#ffffff11' } },
             },
           },
         });
-      } catch (e) { setError('Erreur rendu chart'); }
+        setReady(true);
+      } catch (e: any) { setError('Erreur rendu: ' + e.message); }
     };
 
     loadChartJs(buildChart);
-    return () => { if (chartRef.current) { try { chartRef.current.destroy(); } catch {} } };
+    return () => {
+      if (chartRef.current) { try { chartRef.current.destroy(); } catch {} chartRef.current = null; }
+      if (containerRef.current) containerRef.current.innerHTML = '';
+    };
   }, [graphJson]);
 
-  if (error) return <div className="my-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400">{error}</div>;
+  if (error) return (
+    <div className="my-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400 flex items-center gap-2">
+      <AlertCircle className="w-4 h-4 shrink-0" />{error}
+    </div>
+  );
 
   return (
-    <div className="my-4 p-4 rounded-2xl border" style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.2)' }}>
-      <canvas ref={canvasRef} style={{ maxHeight: '280px' }} />
+    <div className="my-4 rounded-2xl overflow-hidden border" style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.2)' }}>
+      {!ready && (
+        <div className="flex items-center justify-center h-32 gap-3">
+          <div className="w-5 h-5 border-2 border-indigo-500/40 border-t-indigo-500 rounded-full animate-spin" />
+          <span className="text-xs text-white/30 uppercase tracking-widest">Chargement du graphe...</span>
+        </div>
+      )}
+      <div ref={containerRef} style={{ height: '300px', padding: '16px', display: ready ? 'block' : 'none' }} />
     </div>
   );
 };
@@ -185,7 +213,7 @@ const CodeExecutor = ({ code, lang }: { code: string; lang: string }) => {
 };
 
 // ─── Rendu du contenu avec graphes + code exécutable ─────────────────────
-const MessageContent = ({ content }: { content: string }) => {
+const MessageContent = ({ content, onCodePreview }: { content: string; onCodePreview?: (code: string, lang: string) => void }) => {
   // Split on [GRAPH:...] blocks
   const parts = content.split(/(\[GRAPH:[\s\S]*?\])/g);
   return (
@@ -201,8 +229,10 @@ const MessageContent = ({ content }: { content: string }) => {
               const codeStr = String(children).replace(/\n$/, '');
               const isBlock = codeStr.includes('\n') || codeStr.length > 60;
               if (!isBlock) return <code className="font-mono px-1.5 py-0.5 rounded text-xs bg-white/10 text-indigo-300">{children}</code>;
+              const previewLangs = ['html', 'css', 'jsx', 'tsx'];
+              const canPreview = previewLangs.includes(lang);
               return (
-                <div className="my-3 rounded-xl overflow-hidden border border-white/10" style={{ background: 'rgba(0,0,0,0.5)' }}>
+                <div className="my-3 rounded-xl border border-white/10" style={{ background: 'rgba(0,0,0,0.5)', maxWidth: '100%', overflowX: 'hidden' }}>
                   <div className="flex items-center justify-between px-4 py-2 border-b border-white/5">
                     <div className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
@@ -210,8 +240,26 @@ const MessageContent = ({ content }: { content: string }) => {
                       <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
                       <span className="ml-2 text-[10px] font-bold uppercase tracking-widest text-white/30">{lang || 'code'}</span>
                     </div>
+                    <div className="flex items-center gap-1.5">
+                      {canPreview && (
+                        <button
+                          onClick={() => onCodePreview?.(codeStr, lang)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold text-emerald-300 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all"
+                        >
+                          <Eye className="w-3 h-3" /> Préview
+                        </button>
+                      )}
+                      <button onClick={() => { navigator.clipboard.writeText(codeStr); }}
+                        className="p-1 rounded-md text-white/20 hover:text-white/60 transition-all" title="Copier">
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
-                  <pre className="px-4 py-3 text-xs font-mono text-white/80 overflow-x-auto"><code>{children}</code></pre>
+                  <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', maxWidth: '100%' }}>
+                    <pre style={{ margin: 0, padding: '12px 16px', fontSize: '11px', lineHeight: '1.6', whiteSpace: 'pre', minWidth: 0 }}>
+                      <code style={{ fontFamily: 'JetBrains Mono, monospace', color: 'rgba(255,255,255,0.8)' }}>{children}</code>
+                    </pre>
+                  </div>
                   {(lang === 'javascript' || lang === 'js') && <div className="px-4 pb-3"><CodeExecutor code={codeStr} lang={lang} /></div>}
                 </div>
               );
@@ -231,7 +279,7 @@ const MessageContent = ({ content }: { content: string }) => {
   );
 };
 
-// ─── VoiceOrb — Goute d'eau liquide avec gyroscope ───────────────────────
+// ─── VoiceOrb — Goute d'eau liquide avec gyroscope & mouvement ──────────
 const VoiceOrb = ({ isListening, isSpeaking, accentColor }: {
   isListening: boolean; isSpeaking: boolean; accentColor: string;
 }) => {
@@ -239,24 +287,50 @@ const VoiceOrb = ({ isListening, isSpeaking, accentColor }: {
   const secColor  = accentColor === 'emerald' ? '#22d3ee' : accentColor === 'rose' ? '#f59e0b' : '#a855f7';
   const tiltX = useMotionValue(0);
   const tiltY = useMotionValue(0);
-  const springX = useSpring(tiltX, { stiffness: 80, damping: 15 });
-  const springY = useSpring(tiltY, { stiffness: 80, damping: 15 });
-  const rotateX = useTransform(springY, [-30, 30], ['15deg', '-15deg']);
-  const rotateY = useTransform(springX, [-30, 30], ['-15deg', '15deg']);
+  // High-stiffness spring for snappy gyro response
+  const springX = useSpring(tiltX, { stiffness: 120, damping: 18, mass: 0.8 });
+  const springY = useSpring(tiltY, { stiffness: 120, damping: 18, mass: 0.8 });
+  const rotateX = useTransform(springY, [-35, 35], ['20deg', '-20deg']);
+  const rotateY = useTransform(springX, [-35, 35], ['-20deg', '20deg']);
+  // Parallax offsets for inner highlight
+  const highlightX = useTransform(springX, [-35, 35], ['-12px', '12px']);
+  const highlightY = useTransform(springY, [-35, 35], ['-6px', '6px']);
 
   useEffect(() => {
+    let lastBeta = 0, lastGamma = 0;
     const handleOrientation = (e: DeviceOrientationEvent) => {
-      if (e.beta !== null) tiltY.set(Math.max(-30, Math.min(30, e.beta - 45)));
-      if (e.gamma !== null) tiltX.set(Math.max(-30, Math.min(30, e.gamma)));
+      // Smooth delta-based movement for device shake detection
+      if (e.beta !== null) {
+        const delta = e.beta - lastBeta;
+        lastBeta = e.beta;
+        const val = Math.max(-35, Math.min(35, e.beta - 45));
+        tiltY.set(val + (Math.abs(delta) > 5 ? delta * 0.5 : 0));
+      }
+      if (e.gamma !== null) {
+        const delta = e.gamma - lastGamma;
+        lastGamma = e.gamma;
+        const val = Math.max(-35, Math.min(35, e.gamma));
+        tiltX.set(val + (Math.abs(delta) > 5 ? delta * 0.5 : 0));
+      }
     };
     const handleMouse = (e: MouseEvent) => {
       const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
-      tiltX.set((e.clientX - cx) / cx * 20);
-      tiltY.set((e.clientY - cy) / cy * 20);
+      tiltX.set((e.clientX - cx) / cx * 25);
+      tiltY.set((e.clientY - cy) / cy * 25);
     };
-    window.addEventListener('deviceorientation', handleOrientation);
+    // Request device motion permission on iOS 13+
+    const requestPermission = async () => {
+      if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+        try { await (DeviceOrientationEvent as any).requestPermission(); } catch {}
+      }
+    };
+    requestPermission();
+    window.addEventListener('deviceorientation', handleOrientation, true);
     window.addEventListener('mousemove', handleMouse);
-    return () => { window.removeEventListener('deviceorientation', handleOrientation); window.removeEventListener('mousemove', handleMouse); };
+    return () => {
+      window.removeEventListener('deviceorientation', handleOrientation, true);
+      window.removeEventListener('mousemove', handleMouse);
+    };
   }, []);
 
   const bars = 40;
@@ -316,19 +390,32 @@ const VoiceOrb = ({ isListening, isSpeaking, accentColor }: {
             boxShadow: `0 0 50px ${baseColor}88, 0 0 100px ${baseColor}33, inset 0 0 40px ${secColor}22`,
           }}
         >
-          {/* Water caustic shine effect */}
+          {/* Water caustic shine effect — parallax with gyro */}
           <motion.div
-            animate={{ x: [-8, 8, -8], y: [-4, 4, -4], opacity: [0.6, 0.9, 0.6] }}
-            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-            className="absolute top-3 left-5 w-12 h-6 rounded-full blur-md"
-            style={{ background: 'rgba(255,255,255,0.3)' }}
-          />
+            style={{ x: highlightX, y: highlightY }}
+            className="absolute top-3 left-5 w-12 h-6 rounded-full blur-md pointer-events-none"
+            animate={{ opacity: [0.5, 0.9, 0.5] }}
+            transition={{ duration: 2.5, repeat: Infinity }}
+            custom={null}
+            layout={false}
+          >
+            <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,255,0.35)', borderRadius: '999px' }} />
+          </motion.div>
           <motion.div
-            animate={{ x: [4, -4, 4], y: [2, -2, 2], opacity: [0.2, 0.4, 0.2] }}
+            animate={{ x: [4, -4, 4], y: [2, -2, 2], opacity: [0.15, 0.35, 0.15] }}
             transition={{ duration: 4, repeat: Infinity, delay: 0.5 }}
-            className="absolute bottom-6 right-4 w-6 h-3 rounded-full blur-sm"
+            className="absolute bottom-5 right-4 w-6 h-3 rounded-full blur-sm pointer-events-none"
             style={{ background: 'rgba(255,255,255,0.2)' }}
           />
+          {/* Ripple ring on active state */}
+          {(isListening || isSpeaking) && (
+            <motion.div
+              animate={{ scale: [0.6, 1.8], opacity: [0.6, 0] }}
+              transition={{ duration: 1.2, repeat: Infinity, ease: 'easeOut' }}
+              className="absolute inset-0 rounded-full pointer-events-none"
+              style={{ border: `2px solid ${baseColor}88` }}
+            />
+          )}
           {/* Icon */}
           <AnimatePresence mode="wait">
             {isListening ? (
@@ -457,6 +544,19 @@ export default function App() {
   const [showStats, setShowStats] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // ─── NEW FEATURES STATE ──────────────────────────────────────────────────
+  // Tutorial
+  const [showTutorial, setShowTutorial] = useState(() => !localStorage.getItem('djiogo_tutorial_done'));
+  const [tutorialStep, setTutorialStep] = useState(0);
+  // Share gate (after 5 messages)
+  const [showShareGate, setShowShareGate] = useState(false);
+  const [shareConfirmed, setShareConfirmed] = useState(() => localStorage.getItem('djiogo_shared') === 'true');
+  // Request counter for share gate
+  const requestCountRef = useRef(parseInt(localStorage.getItem('djiogo_req_count') || '0'));
+  // Code preview modal
+  const [codePreview, setCodePreview] = useState<{code: string; lang: string} | null>(null);
+  // ─────────────────────────────────────────────────────────────────────────
+
   // ─── Groq Client ──────────────────────────────────────────────────────────
   const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 
@@ -578,6 +678,21 @@ export default function App() {
 
   useEffect(() => { scrollToBottom(); }, [messages]);
 
+  // ─── Mobile viewport fix (prevent resize on virtual keyboard / code blocks) ──
+  useEffect(() => {
+    const metaViewport = document.querySelector('meta[name=viewport]');
+    if (metaViewport) {
+      metaViewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover');
+    }
+    // Prevent layout shifts from virtual keyboard on mobile
+    const onResize = () => {
+      document.documentElement.style.setProperty('--real-vh', `${window.innerHeight * 0.01}px`);
+    };
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   useEffect(() => {
     const loadVoices = () => {
       const voices = window.speechSynthesis.getVoices();
@@ -586,6 +701,56 @@ export default function App() {
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
+
+  // ─── Génération d'images ultra-rapide ───────────────────────────────────
+  const generateImageFast = async (prompt: string): Promise<string> => {
+    // Strategy: try multiple fast sources in parallel, use first success
+    const seed = Math.floor(Math.random() * 999999);
+    const encoded = encodeURIComponent(prompt);
+
+    // Source 1: Pollinations FLUX (fastest, usually ~3-5s)
+    const tryPollinations = async (): Promise<string> => {
+      const url = `https://image.pollinations.ai/prompt/${encoded}?model=flux&width=1024&height=1024&nologo=true&seed=${seed}&enhance=false`;
+      // Poll until image is ready (max 15s)
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, i === 0 ? 2500 : 1500));
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        if (blob.size < 8000) continue;
+        return await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      }
+      throw new Error('pollinations timeout');
+    };
+
+    // Source 2: Pollinations with SDXL model (fallback)
+    const tryPollinationsSdxl = async (): Promise<string> => {
+      await new Promise(r => setTimeout(r, 1000)); // slight delay to let flux try first
+      const url = `https://image.pollinations.ai/prompt/${encoded}?model=turbo&width=1024&height=1024&nologo=true&seed=${seed + 1}`;
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, i === 0 ? 3000 : 1500));
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        if (blob.size < 8000) continue;
+        return await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      }
+      throw new Error('turbo timeout');
+    };
+
+    // Race both sources — fastest wins
+    return await Promise.any([tryPollinations(), tryPollinationsSdxl()]);
+  };
 
   // ─── FONCTION PRINCIPALE D'ENVOI (Groq) ──────────────────────────────────
   const handleSend = async (overrideInput?: string, isImageGen = false) => {
@@ -603,7 +768,7 @@ export default function App() {
       return;
     }
 
-    // ─── Génération d'images via Pollinations.ai ───────────────────────────
+    // ─── Génération d'images ultra-rapide (Pollinations turbo) ──────────────
     if (isImageGen) {
       if (!textToSend.trim()) { setNotification("✏️ Décris l'image que tu veux générer !"); return; }
       const userMsg: Message = { id: Date.now().toString(), role: 'user', content: `🎨 Génère une image : ${textToSend}`, timestamp: Date.now() };
@@ -611,32 +776,24 @@ export default function App() {
       setInput('');
       setIsLoading(true);
       try {
-        const encodedPrompt = encodeURIComponent(textToSend);
-        const seed = Math.floor(Math.random() * 999999);
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
-        let dataUrl = '';
-        let attempts = 0;
-        while (attempts < 10) {
-          attempts++;
-          try {
-            await new Promise(r => setTimeout(r, attempts === 1 ? 3000 : 2000));
-            const res = await fetch(imageUrl, { cache: 'no-store' });
-            if (!res.ok) throw new Error('not ready');
-            const blob = await res.blob();
-            if (blob.size < 5000) throw new Error('too small');
-            dataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob);
-            });
-            break;
-          } catch { if (attempts >= 10) throw new Error('failed'); }
-        }
+        const dataUrl = await generateImageFast(textToSend);
         const newEntry = { dataUrl, prompt: textToSend, ts: Date.now() };
         setGeneratedImages(prev => [newEntry, ...prev.slice(0, 19)]);
         setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: `✅ **Image générée !**\n\n**Prompt :** *${textToSend}*`, timestamp: Date.now(), image: dataUrl, suggestions: [`Même image en style aquarelle`, `Même image en noir et blanc`, `Génère une variation de cette image`] }]);
       } catch {
-        setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: "❌ Erreur de génération. Réessaie.", timestamp: Date.now() }]);
+        setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: "❌ Erreur de génération. Réessaie avec un autre prompt.", timestamp: Date.now() }]);
       } finally { setIsLoading(false); }
       return;
+    }
+
+    // Share gate — after 5 requests
+    if (!isAdmin && !shareConfirmed) {
+      requestCountRef.current += 1;
+      localStorage.setItem('djiogo_req_count', String(requestCountRef.current));
+      if (requestCountRef.current > 5) {
+        setShowShareGate(true);
+        return;
+      }
     }
 
     // Limite de messages pour non-admins
@@ -1337,37 +1494,15 @@ export default function App() {
     const promptSaved = promptToUse;
     if (!promptOverride) setStudioPrompt('');
 
-    const progressInterval = setInterval(() => {
-      setStudioProgress(prev => prev < 85 ? prev + Math.random() * 8 : prev);
-    }, 800);
-
     try {
-      const encodedPrompt = encodeURIComponent(promptSaved);
-      const seed = Math.floor(Math.random() * 999999);
-      const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
-
+      // Use fast parallel generation
+      const progressTimer = setInterval(() => setStudioProgress(p => Math.min(p + 6, 90)), 600);
       let dataUrl = '';
-      let attempts = 0;
-      while (attempts < 10) {
-        attempts++;
-        try {
-          await new Promise(resolve => setTimeout(resolve, attempts === 1 ? 3000 : 2000));
-          const response = await fetch(imageUrl, { cache: 'no-store' });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const contentType = response.headers.get('content-type') || '';
-          if (!contentType.startsWith('image/')) throw new Error('Not image yet');
-          const blob = await response.blob();
-          if (blob.size < 5000) throw new Error('too small');
-          dataUrl = await new Promise<string>((res, rej) => {
-            const reader = new FileReader();
-            reader.onloadend = () => res(reader.result as string);
-            reader.onerror = rej;
-            reader.readAsDataURL(blob);
-          });
-          break;
-        } catch { if (attempts >= 10) throw new Error('failed'); }
+      try {
+        dataUrl = await generateImageFast(promptSaved);
+      } finally {
+        clearInterval(progressTimer);
       }
-
       if (!dataUrl) throw new Error('Impossible de générer');
       setStudioProgress(100);
       const newEntry = { dataUrl, prompt: promptSaved, ts: Date.now() };
@@ -1376,22 +1511,284 @@ export default function App() {
       setNotification("❌ Génération échouée. Réessaie avec un prompt plus descriptif.");
       if (!promptOverride) setStudioPrompt(promptSaved);
     } finally {
-      clearInterval(progressInterval);
       setStudioLoading(false);
       setStudioProgress(0);
     }
   };
 
+
+  // ─── Tutorial steps ──────────────────────────────────────────────────────
+  const TUTORIAL_STEPS = [
+    {
+      title: "Bienvenue sur Djiogo.ai ! 👋",
+      desc: "L'assistant IA ultra-rapide propulsé par Groq. Ce tutoriel rapide te montrera les fonctions essentielles.",
+      icon: "🚀",
+      target: null,
+    },
+    {
+      title: "💬 Zone de Chat",
+      desc: "Tape ta question ici et appuie sur Entrée ou le bouton Envoyer. Tu peux aussi coller du texte ou des images.",
+      icon: "💬",
+      target: "chat-input",
+    },
+    {
+      title: "🎤 Assistant Vocal",
+      desc: "Clique sur 'Vocal' pour parler à Djiogo.ai mains libres. L'IA t'entend, répond, et relit sa réponse automatiquement.",
+      icon: "🎤",
+      target: "voice-btn",
+    },
+    {
+      title: "🎨 Studio d'Images",
+      desc: "Clique sur 'Images' pour générer des images IA ultra-rapides avec FLUX. Décris ce que tu veux et laisse la magie opérer.",
+      icon: "🎨",
+      target: "studio-btn",
+    },
+    {
+      title: "📤 Exporter tes réponses",
+      desc: "Sous chaque réponse, tu trouveras des boutons PDF et Word pour télécharger le contenu en un clic.",
+      icon: "📤",
+      target: "export-btns",
+    },
+    {
+      title: "⚙️ Panneau de contrôle",
+      desc: "Sur le côté gauche, tu peux changer la personnalité de l'IA, le thème, la langue vocale, et bien plus.",
+      icon: "⚙️",
+      target: "sidebar",
+    },
+    {
+      title: "🌟 C'est parti !",
+      desc: "Tu es prêt(e) ! Pose ta première question ou essaie l'assistant vocal. Bonne exploration avec Djiogo.ai !",
+      icon: "🌟",
+      target: null,
+    },
+  ];
+
+  const completeTutorial = () => {
+    localStorage.setItem('djiogo_tutorial_done', '1');
+    setShowTutorial(false);
+  };
+
+  const confirmShare = () => {
+    localStorage.setItem('djiogo_shared', 'true');
+    setShareConfirmed(true);
+    setShowShareGate(false);
+    requestCountRef.current = 0;
+    localStorage.setItem('djiogo_req_count', '0');
+    setNotification("🎉 Merci ! Accès illimité débloqué !");
+  };
+
   return (
     <div className={cn(
-      "flex h-screen overflow-hidden font-sans transition-all duration-700",
+      "flex overflow-hidden font-sans transition-all duration-700",
       theme === 'dark' ? "dark bg-[#050505] text-white" :
       theme === 'light' ? "bg-slate-50 text-slate-900" :
       theme === 'glass' ? "bg-[#0a0a0a] text-white backdrop-blur-md" :
       "bg-[#020205] text-cyan-50",
       fontSize === 'xs' ? "text-xs" : fontSize === 'sm' ? "text-sm" : fontSize === 'base' ? "text-base" : "text-lg"
-    )}>
+    )} style={{ height: 'calc(var(--real-vh, 1vh) * 100)' }}>
       <AnimatePresence>{showPricing && <PricingModal />}</AnimatePresence>
+
+      {/* ═══ TUTORIAL OVERLAY ══════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showTutorial && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[500] flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(12px)' }}
+          >
+            <motion.div
+              key={tutorialStep}
+              initial={{ opacity: 0, scale: 0.85, y: 30 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.85, y: -20 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 24 }}
+              className="w-full max-w-sm rounded-3xl p-8 relative overflow-hidden"
+              style={{ background: 'linear-gradient(135deg, #0e0e1c 0%, #12121f 100%)', border: '1px solid rgba(99,102,241,0.3)', boxShadow: '0 40px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(99,102,241,0.1)' }}
+            >
+              {/* Progress dots */}
+              <div className="flex items-center gap-1.5 mb-6">
+                {TUTORIAL_STEPS.map((_, i) => (
+                  <div key={i} className="h-1 rounded-full transition-all duration-500"
+                    style={{ width: i === tutorialStep ? '24px' : '6px', background: i <= tutorialStep ? '#6366f1' : 'rgba(255,255,255,0.1)' }} />
+                ))}
+                <button onClick={completeTutorial} className="ml-auto text-[10px] text-white/30 hover:text-white/60 transition-colors uppercase tracking-widest font-bold">
+                  Passer
+                </button>
+              </div>
+
+              {/* Icon */}
+              <motion.div
+                initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', delay: 0.1 }}
+                className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl mb-5 mx-auto"
+                style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)' }}
+              >
+                {TUTORIAL_STEPS[tutorialStep].icon}
+              </motion.div>
+
+              <h3 className="text-xl font-display font-bold text-center mb-3 leading-tight">
+                {TUTORIAL_STEPS[tutorialStep].title}
+              </h3>
+              <p className="text-sm text-white/60 text-center leading-relaxed mb-8">
+                {TUTORIAL_STEPS[tutorialStep].desc}
+              </p>
+
+              <div className="flex gap-3">
+                {tutorialStep > 0 && (
+                  <button onClick={() => setTutorialStep(s => s - 1)}
+                    className="flex-1 py-3 rounded-2xl bg-white/5 border border-white/10 text-sm font-medium text-white/60 hover:bg-white/10 transition-all flex items-center justify-center gap-2">
+                    <ChevronRight className="w-4 h-4 rotate-180" /> Retour
+                  </button>
+                )}
+                <button
+                  onClick={() => tutorialStep < TUTORIAL_STEPS.length - 1 ? setTutorialStep(s => s + 1) : completeTutorial()}
+                  className="flex-1 py-3 rounded-2xl text-white text-sm font-bold transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+                  style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 8px 24px rgba(99,102,241,0.3)' }}
+                >
+                  {tutorialStep < TUTORIAL_STEPS.length - 1 ? (
+                    <><span>Suivant</span><ChevronRight className="w-4 h-4" /></>
+                  ) : (
+                    <><Check className="w-4 h-4" /><span>C'est parti !</span></>
+                  )}
+                </button>
+              </div>
+
+              {/* Step counter */}
+              <p className="text-center text-[10px] text-white/20 mt-4 font-mono">
+                {tutorialStep + 1} / {TUTORIAL_STEPS.length}
+              </p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ═══ SHARE GATE ════════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showShareGate && !shareConfirmed && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[490] flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(20px)' }}
+          >
+            <motion.div
+              initial={{ scale: 0.85, y: 40 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.85 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+              className="w-full max-w-sm rounded-3xl p-8 text-center relative overflow-hidden"
+              style={{ background: 'linear-gradient(135deg, #0e0e1c 0%, #14101e 100%)', border: '1px solid rgba(168,85,247,0.3)', boxShadow: '0 40px 80px rgba(0,0,0,0.8)' }}
+            >
+              {/* Glow */}
+              <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse at 50% -20%, rgba(168,85,247,0.2) 0%, transparent 70%)' }} />
+
+              <motion.div
+                animate={{ scale: [1, 1.15, 1], rotate: [0, 10, -10, 0] }}
+                transition={{ duration: 2, repeat: Infinity }}
+                className="text-5xl mb-5"
+              >🔒</motion.div>
+
+              <h2 className="text-2xl font-display font-bold mb-2">Débloquer l'accès illimité</h2>
+              <p className="text-white/50 text-sm leading-relaxed mb-6">
+                Tu as utilisé 5 requêtes gratuites. Pour continuer à utiliser Djiogo.ai sans limite, partage l'app à <strong className="text-white/80">5 amis</strong> !
+              </p>
+
+              {/* Share message preview */}
+              <div className="p-4 rounded-2xl mb-6 text-left" style={{ background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)' }}>
+                <div className="text-[10px] text-purple-400 font-bold uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                  <Share2 className="w-3 h-3" /> Message à partager
+                </div>
+                <p className="text-sm text-white/70 leading-relaxed italic">
+                  "ces l'ia de FOUEGAP qu'il a programmé 🚀 https://int-lligence.vercel.app/"
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {/* WhatsApp */}
+                <a
+                  href={`https://wa.me/?text=${encodeURIComponent("ces l'ia de FOUEGAP qu'il a programmé 🚀 https://int-lligence.vercel.app/")}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-3 w-full py-3.5 rounded-2xl font-bold text-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  style={{ background: 'linear-gradient(135deg, #25d366, #128c7e)', boxShadow: '0 8px 20px rgba(37,211,102,0.3)' }}
+                  onClick={confirmShare}
+                >
+                  <span className="text-lg">📱</span> Partager sur WhatsApp
+                </a>
+
+                {/* Copy link */}
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText("ces l'ia de FOUEGAP qu'il a programmé 🚀 https://int-lligence.vercel.app/");
+                    confirmShare();
+                  }}
+                  className="flex items-center justify-center gap-3 w-full py-3.5 rounded-2xl font-bold text-sm transition-all hover:scale-[1.02] bg-white/5 border border-white/10 text-white/70 hover:bg-white/10"
+                >
+                  <Copy className="w-4 h-4" /> Copier le lien
+                </button>
+
+                {/* Direct share API */}
+                {typeof navigator.share !== 'undefined' && (
+                  <button
+                    onClick={() => {
+                      navigator.share({ title: "Djiogo.ai", text: "ces l'ia de FOUEGAP qu'il a programmé 🚀", url: "https://int-lligence.vercel.app/" })
+                        .then(confirmShare).catch(() => {});
+                    }}
+                    className="flex items-center justify-center gap-3 w-full py-3.5 rounded-2xl font-bold text-sm transition-all hover:scale-[1.02]"
+                    style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 8px 20px rgba(99,102,241,0.3)' }}
+                  >
+                    <Share2 className="w-4 h-4" /> Partager maintenant
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[10px] text-white/20 mt-5">
+                L'accès sera débloqué automatiquement après le partage ✨
+              </p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ═══ CODE PREVIEW MODAL ════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {codePreview && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[480] flex flex-col"
+            style={{ background: 'rgba(0,0,0,0.96)' }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10" style={{ background: 'rgba(10,10,15,0.9)' }}>
+              <div className="flex items-center gap-3">
+                <Eye className="w-5 h-5 text-emerald-400" />
+                <span className="font-bold text-sm">Préview — {codePreview.lang.toUpperCase()}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => { navigator.clipboard.writeText(codePreview.code); setNotification("✅ Copié !"); }}
+                  className="px-3 py-1.5 rounded-lg text-[11px] bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 transition-all flex items-center gap-1.5">
+                  <Copy className="w-3 h-3" /> Copier
+                </button>
+                <button onClick={() => setCodePreview(null)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+                  <X className="w-5 h-5 text-white/50" />
+                </button>
+              </div>
+            </div>
+            {/* Preview iframe */}
+            <div className="flex-1 relative">
+              {(codePreview.lang === 'html') ? (
+                <iframe
+                  srcDoc={codePreview.code}
+                  className="w-full h-full border-0"
+                  sandbox="allow-scripts allow-same-origin"
+                  title="Code Preview"
+                  style={{ background: 'white' }}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <div className="text-center text-white/40">
+                    <Code2 className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                    <p className="text-sm">Préview disponible pour HTML uniquement</p>
+                    <p className="text-xs mt-1 text-white/20">JSX/TSX nécessite un bundler</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Image Studio — outside App render tree via portal-like AnimatePresence */}
       <AnimatePresence>
@@ -1423,11 +1820,17 @@ export default function App() {
                 <div className="flex gap-3">
                   <textarea
                     value={studioPrompt}
-                    onChange={e => setStudioPrompt(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateStudioImage(); } }}
+                    onChange={e => { e.stopPropagation(); setStudioPrompt(e.target.value); }}
+                    onKeyDown={e => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateStudioImage(); }
+                    }}
+                    onClick={e => e.stopPropagation()}
+                    onFocus={e => e.stopPropagation()}
                     placeholder="Décris l'image à créer... ex: un tigre blanc dans une forêt de bambous"
                     className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm resize-none focus:outline-none focus:border-indigo-500/60 transition-all placeholder:text-white/20 min-h-[60px]"
                     rows={2}
+                    autoComplete="off"
                   />
                   <button onClick={() => generateStudioImage()} disabled={!studioPrompt.trim() || studioLoading}
                     className={cn("px-6 rounded-2xl font-bold text-sm flex items-center gap-2 transition-all shrink-0",
@@ -1551,7 +1954,7 @@ export default function App() {
       {/* Sidebar */}
       <AnimatePresence mode="wait">
         {isSidebarOpen && (
-          <motion.aside initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }} className="fixed md:relative z-50 h-full w-[280px] glass-sidebar flex flex-col overflow-hidden">
+          <motion.aside initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }} className="fixed md:relative z-50 h-full w-[280px] flex flex-col overflow-hidden" style={{ background: 'rgba(8,8,14,0.96)', backdropFilter: 'blur(40px) saturate(180%)', WebkitBackdropFilter: 'blur(40px) saturate(180%)', borderRight: '1px solid rgba(255,255,255,0.08)', boxShadow: '10px 0 40px rgba(0,0,0,0.7)' }}>
             <div className="p-6 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
@@ -1898,6 +2301,15 @@ export default function App() {
             <button onClick={toggleFullscreen} className="hidden md:flex p-2 hover:bg-white/5 rounded-lg transition-colors text-white/30 hover:text-white/70" title="Plein écran">
               {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             </button>
+            <button
+              onClick={() => setShowShareGate(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all hover:scale-105 active:scale-95 text-white"
+              style={{ background: 'linear-gradient(135deg, #7c3aed, #a855f7)', boxShadow: '0 4px 12px rgba(168,85,247,0.3)' }}
+              title="Partager l'app"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Partager</span>
+            </button>
             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">Groq Actif</span>
@@ -1960,7 +2372,7 @@ export default function App() {
                       </div>
                     )}
 
-                    <MessageContent content={message.content} />
+                    <MessageContent content={message.content} onCodePreview={(c, l) => setCodePreview({ code: c, lang: l })} />
 
                     {message.suggestions && message.suggestions.length > 0 && (
                       <div className="mt-4 flex flex-wrap gap-2">
