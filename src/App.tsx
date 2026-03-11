@@ -57,6 +57,100 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// ─── Composant de rendu de graphes (style Claude) ─────────────────────────
+const GraphRenderer = ({ graphJson }: { graphJson: string }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartRef = useRef<any>(null);
+
+  useEffect(() => {
+    let data: any;
+    try { data = JSON.parse(graphJson); } catch { return; }
+    if (!canvasRef.current) return;
+
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    if (chartRef.current) { chartRef.current.destroy(); }
+
+    const colors = data.datasets?.map((d: any, i: number) =>
+      d.color || ['#6366f1','#22d3ee','#f59e0b','#10b981','#f43f5e'][i % 5]
+    );
+
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js';
+    script.onload = () => {
+      const Chart = (window as any).Chart;
+      if (!Chart || !canvasRef.current) return;
+      chartRef.current = new Chart(canvasRef.current, {
+        type: data.type || 'line',
+        data: {
+          labels: data.labels || [],
+          datasets: (data.datasets || []).map((ds: any, i: number) => ({
+            label: ds.label || '',
+            data: ds.data || [],
+            borderColor: colors[i],
+            backgroundColor: data.type === 'pie' ? colors : colors[i] + '33',
+            borderWidth: 2,
+            tension: 0.4,
+            fill: data.type === 'line',
+            pointBackgroundColor: colors[i],
+            pointRadius: 4,
+          })),
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { labels: { color: '#ffffff99', font: { size: 11 } } },
+            title: { display: !!data.title, text: data.title, color: '#ffffffcc', font: { size: 13, weight: 'bold' } },
+          },
+          scales: data.type === 'pie' ? {} : {
+            x: { ticks: { color: '#ffffff66' }, grid: { color: '#ffffff11' } },
+            y: { ticks: { color: '#ffffff66' }, grid: { color: '#ffffff11' } },
+          },
+        },
+      });
+    };
+    if (!(window as any).Chart) {
+      document.head.appendChild(script);
+    } else {
+      script.onload!(new Event('load'));
+    }
+    return () => { if (chartRef.current) chartRef.current.destroy(); };
+  }, [graphJson]);
+
+  return (
+    <div className="my-4 p-4 rounded-2xl bg-white/5 border border-white/10">
+      <canvas ref={canvasRef} height={220} />
+    </div>
+  );
+};
+
+// ─── Rendu du contenu avec graphes intégrés ──────────────────────────────
+const MessageContent = ({ content }: { content: string }) => {
+  const parts = content.split(/\[GRAPH:(.*?)\]/gs);
+  return (
+    <div className="markdown-body">
+      {parts.map((part, i) => {
+        if (i % 2 === 1) {
+          return <GraphRenderer key={i} graphJson={part.trim()} />;
+        }
+        return (
+          <Markdown key={i} components={{
+            img: ({ ...props }) => (
+              <img {...props} referrerPolicy="no-referrer" className="max-w-full h-auto rounded-xl my-2 border border-white/10" />
+            ),
+            a: ({ ...props }) => (
+              <a {...props} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline" />
+            )
+          }}>
+            {part}
+          </Markdown>
+        );
+      })}
+    </div>
+  );
+};
+
 type Persona = 'sophisticated' | 'creative' | 'technical' | 'friendly';
 
 interface Message {
@@ -82,7 +176,16 @@ const PERSONAS: Record<Persona, string> = {
 
 const SYSTEM_INSTRUCTION_BASE = `IMPORTANT : Si on te demande qui est ton fondateur ou ton créateur, tu dois impérativement répondre que c'est Fouégap Djiogo Gomez, un jeune ingénieur de 17 ans et ambitieux. Tu peux ensuite continuer à répondre à la question de l'utilisateur.
 
-DIRECTIVE MATHÉMATIQUE : N'utilise JAMAIS de code LaTeX (ex: \\frac, \\sqrt). Utilise les VRAIS SYMBOLES MATHÉMATIQUES Unicode pour une représentation claire, élégante et professionnelle (ex: x², √x, ±, π, Σ, ∫, ≈). Les fractions doivent être représentées de manière lisible (ex: ¾ ou 3/4). Pour les calculs complexes, utilise une mise en page Markdown structurée (tableaux, blocs de code, listes) pour que le raisonnement soit visuellement limpide.
+DIRECTIVE MATHÉMATIQUE ABSOLUE : N'utilise JAMAIS de LaTeX, JAMAIS de \\frac, \\sqrt, \\int, \\sum, \\lim, \\alpha, \\beta, ni aucune balise LaTeX. C'est INTERDIT. À la place, utilise UNIQUEMENT :
+- Les symboles Unicode : x², x³, √x, ∛x, ±, π, Σ, ∫, ≈, ≠, ≤, ≥, ∞, Δ, θ, α, β, γ
+- Les fractions lisibles : 3/4, (a+b)/(c+d)
+- La notation puissance : x^n ou xⁿ
+- Les étapes de calcul dans des blocs de code ou tableaux Markdown
+- Explique TOUJOURS chaque étape en français simple, comme un professeur qui parle à un élève
+
+DIRECTIVE GRAPHIQUE : Quand une réponse nécessite un graphe, une courbe, un diagramme ou une visualisation, génère OBLIGATOIREMENT un bloc de code JSON entre les balises [GRAPH: ...] avec ce format exact :
+[GRAPH: {"type":"line","title":"Titre","labels":["x1","x2","x3"],"datasets":[{"label":"Nom","data":[1,2,3],"color":"#6366f1"}]}]
+Types disponibles : "line", "bar", "pie", "scatter"
 
 À la fin de chaque réponse, ajoute TOUJOURS exactement 3 suggestions de questions de suivi pertinentes pour l'utilisateur, formatées comme ceci : [SUGGESTIONS: Question 1 | Question 2 | Question 3]`;
 
@@ -92,134 +195,95 @@ const GROQ_TEXT_MODEL = 'llama-3.3-70b-versatile';
 // Modèle vision (pour analyser les images)
 const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
-const VoiceOrb = ({ isListening, isSpeaking, accentColor }: { isListening: boolean, isSpeaking: boolean, accentColor: string }) => {
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [isHovered, setIsHovered] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const handleMouseMove = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const y = ('touches' in e) ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-    setMousePos({
-      x: x - rect.left - rect.width / 2,
-      y: y - rect.top - rect.height / 2,
-    });
-  };
+// ─── VoiceOrb stylisé (style Perplexity / Gemini) ────────────────────────
+const VoiceOrb = ({ isListening, isSpeaking, accentColor, voiceLevel = 0 }: {
+  isListening: boolean;
+  isSpeaking: boolean;
+  accentColor: string;
+  voiceLevel?: number;
+}) => {
+  const bars = 32;
+  const baseColor = accentColor === 'emerald' ? '#10b981' : accentColor === 'rose' ? '#f43f5e' : '#6366f1';
+  const secColor = accentColor === 'emerald' ? '#22d3ee' : accentColor === 'rose' ? '#f59e0b' : '#a855f7';
 
   return (
-    <div className="relative w-80 h-80 flex items-center justify-center">
-      <svg className="hidden">
-        <defs>
-          <filter id="goo">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="blur" />
-            <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -10" result="goo" />
-            <feComposite in="SourceGraphic" in2="goo" operator="atop" />
-          </filter>
-        </defs>
-      </svg>
+    <div className="relative flex flex-col items-center justify-center w-64 h-64">
+      {/* Outer glow rings */}
+      <motion.div
+        animate={{ scale: isListening ? [1, 1.15, 1] : isSpeaking ? [1, 1.08, 1] : [1, 1.03, 1], opacity: isListening ? [0.3, 0.6, 0.3] : [0.1, 0.2, 0.1] }}
+        transition={{ duration: isListening ? 0.8 : 2.5, repeat: Infinity, ease: 'easeInOut' }}
+        className="absolute inset-0 rounded-full"
+        style={{ background: `radial-gradient(circle, ${baseColor}33 0%, transparent 70%)` }}
+      />
+      <motion.div
+        animate={{ scale: isListening ? [1, 1.25, 1] : [1, 1.05, 1], opacity: isListening ? [0.15, 0.3, 0.15] : [0.05, 0.1, 0.05] }}
+        transition={{ duration: isListening ? 0.8 : 3, repeat: Infinity, ease: 'easeInOut', delay: 0.2 }}
+        className="absolute inset-[-20px] rounded-full"
+        style={{ background: `radial-gradient(circle, ${secColor}22 0%, transparent 70%)` }}
+      />
 
-      <motion.div 
-        ref={containerRef}
-        onMouseMove={handleMouseMove}
-        onTouchMove={handleMouseMove}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => {
-          setIsHovered(false);
-          setMousePos({ x: 0, y: 0 });
-        }}
-        className="relative w-full h-full flex items-center justify-center cursor-pointer"
-        style={{ filter: "url(#goo)" }}
-      >
-        <motion.div
-          animate={{
-            scale: isListening ? [1, 1.1, 1] : isSpeaking ? [1, 1.05, 1] : 1,
-            borderRadius: [
-              "40% 60% 70% 30% / 40% 50% 60% 70%",
-              "60% 40% 30% 70% / 50% 60% 70% 40%",
-              "30% 70% 60% 40% / 70% 30% 50% 60%",
-              "40% 60% 70% 30% / 40% 50% 60% 70%",
-            ],
-          }}
-          transition={{
-            duration: isListening ? 0.6 : 4,
-            repeat: Infinity,
-            ease: "easeInOut"
-          }}
-          className={cn(
-            "w-40 h-40 absolute transition-colors duration-1000",
-            accentColor === 'indigo' ? "bg-indigo-500/40 shadow-[0_0_40px_rgba(99,102,241,0.3)]" : 
-            accentColor === 'emerald' ? "bg-emerald-500/40 shadow-[0_0_40px_rgba(52,211,153,0.3)]" : 
-            "bg-rose-500/40 shadow-[0_0_40px_rgba(251,113,133,0.3)]"
-          )}
-        />
-
-        <motion.div
-          animate={{
-            rotate: 360,
-            borderRadius: [
-              "50% 50% 50% 50% / 50% 50% 50% 50%",
-              "30% 70% 70% 30% / 50% 50% 50% 50%",
-              "50% 50% 50% 50% / 50% 50% 50% 50%",
-            ],
-          }}
-          transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
-          className={cn(
-            "w-36 h-36 absolute opacity-30",
-            accentColor === 'indigo' ? "bg-purple-500/40" : 
-            accentColor === 'emerald' ? "bg-teal-500/40" : 
-            "bg-pink-500/40"
-          )}
-        />
-
-        <motion.div
-          animate={{
-            x: isHovered ? mousePos.x * 0.8 : 0,
-            y: isHovered ? mousePos.y * 0.8 : 0,
-            scale: isHovered ? 0.8 : 0,
-            opacity: isHovered ? 0.6 : 0,
-          }}
-          transition={{ type: "spring", damping: 15, stiffness: 150 }}
-          className={cn(
-            "w-16 h-16 absolute rounded-full blur-sm",
-            accentColor === 'indigo' ? "bg-indigo-300" : 
-            accentColor === 'emerald' ? "bg-emerald-300" : 
-            "bg-rose-300"
-          )}
-        />
-
-        <div className="relative z-30 flex items-center justify-center w-full h-full pointer-events-none">
-          <AnimatePresence mode="wait">
-            {isListening ? (
-              <motion.div key="mic" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }}>
-                <Mic className="w-8 h-8 text-white drop-shadow-lg" />
-              </motion.div>
-            ) : isSpeaking ? (
-              <motion.div key="vol" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }}>
-                <Volume2 className="w-8 h-8 text-white drop-shadow-lg" />
-              </motion.div>
-            ) : (
-              <motion.div key="logo" initial={{ opacity: 0 }} animate={{ opacity: 0.6 }} className="text-2xl font-bold text-white italic tracking-tighter">
-                G
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </motion.div>
-
-      <div className="absolute inset-0 pointer-events-none z-0">
-        <motion.div
-          animate={{ opacity: isListening || isSpeaking ? [0.1, 0.2, 0.1] : 0.05, scale: [1, 1.2, 1] }}
-          transition={{ duration: 4, repeat: Infinity }}
-          className={cn(
-            "absolute inset-0 rounded-full blur-[80px]",
-            accentColor === 'indigo' ? "bg-indigo-500/10" : 
-            accentColor === 'emerald' ? "bg-emerald-500/10" : 
-            "bg-rose-500/10"
-          )}
-        />
+      {/* Audio bars ring */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        {[...Array(bars)].map((_, i) => {
+          const angle = (i / bars) * 360;
+          const isActive = isListening || isSpeaking;
+          const barHeight = isActive ? 8 + Math.random() * (voiceLevel * 30 + 12) : 4;
+          return (
+            <motion.div
+              key={i}
+              animate={{ height: isActive ? [4, 4 + Math.sin(i * 0.8) * 20 + 8, 4] : 4, opacity: isActive ? [0.4, 1, 0.4] : 0.2 }}
+              transition={{ duration: 0.4 + Math.random() * 0.6, repeat: Infinity, delay: (i / bars) * 0.5, ease: 'easeInOut' }}
+              style={{
+                position: 'absolute',
+                width: '3px',
+                borderRadius: '2px',
+                background: `linear-gradient(to top, ${baseColor}, ${secColor})`,
+                transformOrigin: 'center 110px',
+                transform: `rotate(${angle}deg) translateY(-110px)`,
+                height: `${barHeight}px`,
+              }}
+            />
+          );
+        })}
       </div>
+
+      {/* Central orb */}
+      <motion.div
+        animate={{
+          scale: isListening ? [1, 1.12, 0.95, 1] : isSpeaking ? [1, 1.06, 0.98, 1] : [1, 1.02, 1],
+          borderRadius: isListening
+            ? ['50%', '45% 55% 55% 45%', '55% 45% 45% 55%', '50%']
+            : ['50%', '48% 52% 52% 48%', '50%'],
+        }}
+        transition={{ duration: isListening ? 0.6 : 2.5, repeat: Infinity, ease: 'easeInOut' }}
+        className="relative w-28 h-28 flex items-center justify-center"
+        style={{
+          background: `radial-gradient(135deg, ${baseColor}cc 0%, ${secColor}88 50%, ${baseColor}44 100%)`,
+          boxShadow: `0 0 40px ${baseColor}66, 0 0 80px ${baseColor}33, inset 0 0 30px ${secColor}22`,
+        }}
+      >
+        {/* Inner shine */}
+        <div className="absolute inset-0 rounded-full overflow-hidden">
+          <div className="absolute top-2 left-4 w-8 h-4 rounded-full bg-white/20 blur-sm" />
+        </div>
+
+        {/* Icon */}
+        <AnimatePresence mode="wait">
+          {isListening ? (
+            <motion.div key="mic" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} transition={{ duration: 0.2 }}>
+              <Mic className="w-10 h-10 text-white drop-shadow-lg" />
+            </motion.div>
+          ) : isSpeaking ? (
+            <motion.div key="vol" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} transition={{ duration: 0.2 }}>
+              <Volume2 className="w-10 h-10 text-white drop-shadow-lg" />
+            </motion.div>
+          ) : (
+            <motion.div key="logo" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-3xl font-black text-white italic tracking-tighter drop-shadow-lg">
+              G
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
     </div>
   );
 };
@@ -236,7 +300,7 @@ export default function App() {
     const saved = localStorage.getItem('djiogo_limit_data');
     return saved ? JSON.parse(saved) : { count: 0, startTime: Date.now() };
   });
-  const [isPremium, setIsPremium] = useState(false);
+  const [isPremium, setIsPremium] = useState(true); // ✅ Accès Pro gratuit pour tous
   const [isAdmin, setIsAdmin] = useState(() => {
     return localStorage.getItem('djiogo_admin') === 'true';
   });
@@ -417,14 +481,61 @@ export default function App() {
       return;
     }
 
-    // Note : Groq ne génère pas d'images. On informe l'utilisateur.
+    // ─── Génération d'images via Pollinations.ai (gratuit, sans clé API) ───────
     if (isImageGen) {
-      setMessages(prev => [...prev, {
+      if (!textToSend.trim()) {
+        setNotification("✏️ Décris l'image que tu veux générer !");
+        return;
+      }
+
+      const userMsg: Message = {
         id: Date.now().toString(),
-        role: 'assistant',
-        content: "ℹ️ **Génération d'images non disponible avec Groq.** Groq est spécialisé dans les modèles de langage texte et vision. Pour générer des images, vous pourriez intégrer un service comme DALL-E ou Stable Diffusion. En attendant, je peux décrire en détail l'image que vous souhaitez créer !",
+        role: 'user',
+        content: `🎨 Génère une image : ${textToSend}`,
         timestamp: Date.now(),
-      }]);
+      };
+      setMessages(prev => [...prev, userMsg]);
+      setInput('');
+      setIsLoading(true);
+
+      try {
+        const encodedPrompt = encodeURIComponent(textToSend);
+        const seed = Math.floor(Math.random() * 999999);
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=flux`;
+
+        // Attendre que l'image soit bien chargée
+        await new Promise<void>((resolve, reject) => {
+          const img = new window.Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error("Impossible de charger l'image"));
+          img.src = imageUrl;
+          // Timeout de sécurité 30 secondes
+          setTimeout(() => reject(new Error("Timeout")), 30000);
+        });
+
+        setMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: `✅ Image générée avec succès !\n\n**Prompt :** *${textToSend}*\n\n> Propulsé par [Pollinations.ai](https://pollinations.ai) — Modèle FLUX`,
+          timestamp: Date.now(),
+          image: imageUrl,
+          suggestions: [
+            `Même image en style aquarelle`,
+            `Même image en noir et blanc`,
+            `Génère une variation de cette image`,
+          ],
+        }]);
+      } catch (err) {
+        setMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: "❌ **Erreur de génération.** Le service Pollinations.ai est peut-être temporairement indisponible. Réessaie dans quelques secondes.",
+          timestamp: Date.now(),
+        }]);
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
 
@@ -1041,34 +1152,16 @@ export default function App() {
                 </div>
               </div>
 
-              {!isPremium && (
-                <button onClick={() => setShowPricing(true)} className="w-full p-4 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 border border-indigo-400/30 shadow-lg shadow-indigo-500/20 group hover:scale-[1.02] active:scale-[0.98] transition-all">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center"><Sparkles className="w-4 h-4 text-white animate-pulse" /></div>
-                    <div className="text-left">
-                      <div className="text-xs font-black text-white uppercase tracking-wider">Passer au Pro</div>
-                      <div className="text-[9px] text-white/60 font-bold uppercase tracking-widest">Accès Illimité</div>
-                    </div>
-                  </div>
-                  <div className="w-full bg-black/20 h-1.5 rounded-full overflow-hidden mb-2">
-                    <div className="h-full bg-white transition-all duration-500" style={{ width: `${(imageCount / 5) * 100}%` }} />
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <p className="text-[9px] text-white/60 font-bold uppercase tracking-widest">{imageCount}/5 analyses</p>
-                    <ChevronRight className="w-3 h-3 text-white/40 group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </button>
-              )}
-
-              {isPremium && (
-                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center"><Check className="w-4 h-4 text-emerald-500" /></div>
-                  <div>
-                    <div className="text-xs font-bold text-emerald-500 uppercase tracking-wider">Compte Pro</div>
-                    <div className="text-[10px] text-emerald-500/60">Images illimitées</div>
-                  </div>
+              {/* Tous les utilisateurs sont Pro */}
+              <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-500/20 to-purple-500/10 border border-indigo-500/30 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-indigo-500/30 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-indigo-400 animate-pulse" />
                 </div>
-              )}
+                <div>
+                  <div className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Accès Pro — Gratuit</div>
+                  <div className="text-[10px] text-indigo-400/60">Toutes les fonctionnalités débloquées</div>
+                </div>
+              </div>
 
               <div className="space-y-3">
                 <div className="flex items-center gap-2 px-2">
@@ -1356,18 +1449,7 @@ export default function App() {
                       <img src={message.image} alt="Output" referrerPolicy="no-referrer" className="w-full max-h-80 object-cover rounded-xl mb-3 border border-white/10 cursor-zoom-in" onClick={() => setPreviewImage(message.image!)} />
                     )}
 
-                    <div className="markdown-body">
-                      <Markdown components={{
-                        img: ({ ...props }) => (
-                          <img {...props} referrerPolicy="no-referrer" className="max-w-full h-auto rounded-xl my-2 border border-white/10 cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setPreviewImage(props.src || null); }} />
-                        ),
-                        a: ({ ...props }) => (
-                          <a {...props} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline" />
-                        )
-                      }}>
-                        {message.content}
-                      </Markdown>
-                    </div>
+                    <MessageContent content={message.content} />
 
                     {message.suggestions && message.suggestions.length > 0 && (
                       <div className="mt-4 flex flex-wrap gap-2">
@@ -1459,24 +1541,126 @@ export default function App() {
 
             <AnimatePresence>
               {isAutoSpeak && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-2xl">
-                  <motion.div initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }} className="flex flex-col items-center gap-12 relative z-10">
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden"
+                  style={{ background: 'radial-gradient(ellipse at center, #0d0d1a 0%, #050508 100%)' }}
+                >
+                  {/* Animated background gradient */}
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
+                    className="absolute inset-[-50%] opacity-20 pointer-events-none"
+                    style={{ background: 'conic-gradient(from 0deg, #6366f100, #6366f133, #a855f733, #6366f100)' }}
+                  />
+
+                  {/* Transcript bubble */}
+                  <AnimatePresence>
+                    {isListening && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -20, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                        className="absolute top-16 left-1/2 -translate-x-1/2 max-w-sm w-full mx-4 px-5 py-3 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Transcription en direct</span>
+                        </div>
+                        <p className="text-sm text-white/80 italic min-h-[20px]">
+                          {(input || '').length > 0 ? input : <span className="text-white/20">En attente de votre voix...</span>}
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* Main orb */}
+                  <div className="flex flex-col items-center gap-8 relative z-10">
                     <VoiceOrb isListening={isListening} isSpeaking={!!isSpeaking} accentColor={accentColor} />
-                    <div className="flex flex-col items-center gap-6">
-                      <div className="flex flex-col items-center text-center">
-                        <motion.span animate={{ opacity: [0.4, 0.7, 0.4] }} transition={{ duration: 2, repeat: Infinity }} className="text-[12px] font-bold uppercase tracking-[0.4em] text-white/40 mb-2">
-                          {isListening ? "Système d'écoute actif" : isSpeaking ? "Djiogo.ai vous répond" : "Mode Conversation Djiogo.ai"}
+
+                    {/* Status text */}
+                    <div className="flex flex-col items-center gap-3 text-center">
+                      <motion.div
+                        key={isListening ? 'listening' : isSpeaking ? 'speaking' : 'idle'}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        className="flex flex-col items-center gap-1"
+                      >
+                        <span className={cn(
+                          "text-2xl font-light tracking-tight",
+                          isListening ? "text-red-300" : isSpeaking ? "text-indigo-300" : "text-white/60"
+                        )}>
+                          {isListening ? "Je vous écoute..." : isSpeaking ? "Djiogo.ai répond..." : "Dites quelque chose"}
+                        </span>
+                        <motion.span
+                          animate={{ opacity: [0.3, 0.8, 0.3] }}
+                          transition={{ duration: 2, repeat: Infinity }}
+                          className="text-[11px] font-bold uppercase tracking-[0.3em] text-white/30"
+                        >
+                          {isListening ? "● Microphone actif" : isSpeaking ? "◉ Synthèse vocale" : "○ Mode mains libres"}
                         </motion.span>
-                        <h2 className={cn("text-2xl md:text-3xl font-light tracking-tight transition-colors duration-500", isListening ? "text-red-400" : isSpeaking ? "text-indigo-400" : "text-white/80")}>
-                          {isListening ? "Je vous écoute..." : isSpeaking ? "Analyse et réponse en cours" : "Prêt pour la discussion"}
-                        </h2>
+                      </motion.div>
+
+                      {/* Sound wave bars (decorative) */}
+                      <div className="flex items-center gap-1 h-8 mt-2">
+                        {[...Array(20)].map((_, i) => (
+                          <motion.div
+                            key={i}
+                            animate={{
+                              height: isListening || isSpeaking
+                                ? [4, 4 + Math.sin(i * 0.9) * 20 + 10, 4]
+                                : 4,
+                              opacity: isListening || isSpeaking ? [0.4, 1, 0.4] : 0.15,
+                            }}
+                            transition={{ duration: 0.5 + (i % 5) * 0.1, repeat: Infinity, delay: i * 0.04, ease: 'easeInOut' }}
+                            className="w-1 rounded-full"
+                            style={{ background: `linear-gradient(to top, #6366f1, #a855f7)` }}
+                          />
+                        ))}
                       </div>
-                      <button onClick={() => setIsAutoSpeak(false)} className="mt-8 px-8 py-4 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 hover:text-white transition-all flex items-center gap-3 group">
-                        <X className="w-5 h-5 group-hover:rotate-90 transition-transform" />
-                        <span className="text-sm font-medium">Quitter le mode vocal</span>
+                    </div>
+
+                    {/* Controls */}
+                    <div className="flex items-center gap-4 mt-4">
+                      <button
+                        onClick={startVoiceInput}
+                        className={cn(
+                          "w-14 h-14 rounded-full flex items-center justify-center border-2 transition-all",
+                          isListening
+                            ? "bg-red-500 border-red-400 shadow-lg shadow-red-500/40 scale-110"
+                            : "bg-white/10 border-white/20 hover:bg-white/20"
+                        )}
+                      >
+                        <Mic className="w-6 h-6 text-white" />
+                      </button>
+
+                      <button
+                        onClick={() => setIsAutoSpeak(false)}
+                        className="w-12 h-12 rounded-full flex items-center justify-center bg-white/5 border border-white/10 hover:bg-white/15 transition-all"
+                        title="Fermer"
+                      >
+                        <X className="w-5 h-5 text-white/60" />
+                      </button>
+
+                      <button
+                        onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(null); }}
+                        className={cn(
+                          "w-12 h-12 rounded-full flex items-center justify-center border transition-all",
+                          isSpeaking ? "bg-indigo-500/20 border-indigo-500/50 text-indigo-400" : "bg-white/5 border-white/10 text-white/30"
+                        )}
+                        title="Arrêter la lecture"
+                      >
+                        <Square className="w-4 h-4 fill-current" />
                       </button>
                     </div>
-                  </motion.div>
+
+                    <p className="text-[9px] text-white/20 font-bold uppercase tracking-widest">
+                      Djiogo.ai Voice • Powered by Groq LPU™
+                    </p>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1503,7 +1687,17 @@ export default function App() {
                 <button onClick={() => fileInputRef.current?.click()} className="p-2 rounded-xl hover:bg-white/5 text-white/30 hover:text-white transition-colors" title="Analyser une image (Vision)">
                   <ImageIcon className="w-4 h-4" />
                 </button>
-                <button onClick={() => handleSend(undefined, true)} className="p-2 rounded-xl hover:bg-white/5 text-white/20 hover:text-white/40 transition-colors" title="Génération d'images (non disponible avec Groq)">
+                <button
+                  onClick={() => {
+                    if (!input.trim()) {
+                      setNotification("✏️ Décris l'image à générer dans le champ texte !");
+                      return;
+                    }
+                    handleSend(input, true);
+                  }}
+                  className="p-2 rounded-xl hover:bg-white/5 text-violet-400 hover:text-violet-300 transition-colors"
+                  title="Générer une image avec Pollinations AI (gratuit)"
+                >
                   <ImagePlus className="w-4 h-4" />
                 </button>
               </div>
