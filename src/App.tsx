@@ -678,6 +678,20 @@ export default function App() {
 
   useEffect(() => { scrollToBottom(); }, [messages]);
 
+  // ─── Précharger Puter.js au démarrage si pas encore dans index.html ──────
+  useEffect(() => {
+    if (!(window as any).puter) {
+      // Vérifier si le script est déjà dans le DOM
+      const existing = document.querySelector('script[src*="puter.com"]');
+      if (!existing) {
+        const s = document.createElement('script');
+        s.src = 'https://js.puter.com/v2/';
+        s.async = true;
+        document.head.appendChild(s);
+      }
+    }
+  }, []);
+
   // ─── Mobile viewport fix (prevent resize on virtual keyboard / code blocks) ──
   useEffect(() => {
     const metaViewport = document.querySelector('meta[name=viewport]');
@@ -703,52 +717,66 @@ export default function App() {
   }, []);
 
   // ─── Génération d'images via Puter.js (FLUX Schnell ~2-4s, sans clé API) ──
-  const generateImageFast = async (prompt: string): Promise<string> => {
-    const puter = (window as any).puter;
-    if (!puter?.ai?.txt2img) {
-      // Fallback Pollinations si puter pas encore chargé
-      const encoded = encodeURIComponent(prompt);
-      const seed = Math.floor(Math.random() * 999999);
-      const url = `https://image.pollinations.ai/prompt/${encoded}?model=flux&width=1024&height=1024&nologo=true&seed=${seed}`;
-      for (let i = 0; i < 8; i++) {
-        await new Promise(r => setTimeout(r, i === 0 ? 2500 : 1500));
-        try {
-          const res = await fetch(url, { cache: 'no-store' });
-          if (!res.ok) continue;
-          const blob = await res.blob();
-          if (blob.size < 8000) continue;
-          return await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-        } catch { continue; }
-      }
-      throw new Error('Fallback timeout');
-    }
-
-    // ── Puter.js FLUX Schnell — le plus rapide (~2-4s) ──────────────────────
-    const img = await puter.ai.txt2img(prompt, {
-      model: 'flux-schnell', // modèle ultra-rapide
-      quality: 'medium',
-    });
-
-    // img.src est une URL blob ou data URL — on la convertit en base64
-    if (!img?.src) throw new Error('Puter image generation failed');
-
-    // Si c'est déjà une data URL, on la retourne directement
-    if (img.src.startsWith('data:')) return img.src;
-
-    // Sinon on fetch le blob et on convertit
-    const res = await fetch(img.src);
-    const blob = await res.blob();
-    return await new Promise<string>((resolve, reject) => {
+  // ─── Helper: blob/URL → base64 dataURL ──────────────────────────────────
+  const toBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
       reader.onerror = reject;
       reader.readAsDataURL(blob);
     });
+
+  // ─── Génération d'images via Puter.js (FLUX Schnell ~2-4s) ───────────────
+  const generateImageFast = async (prompt: string): Promise<string> => {
+
+    // ── Attendre que Puter.js soit prêt (chargé depuis index.html) ──────────
+    let puter = (window as any).puter;
+    if (!puter?.ai?.txt2img) {
+      // Attendre max 5s que le script se charge
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        puter = (window as any).puter;
+        if (puter?.ai?.txt2img) break;
+      }
+    }
+
+    // ── Puter.js disponible → FLUX Schnell (le plus rapide) ─────────────────
+    if (puter?.ai?.txt2img) {
+      try {
+        const img = await puter.ai.txt2img(prompt, false);
+        if (img?.src) {
+          if (img.src.startsWith('data:')) return img.src;
+          const res = await fetch(img.src);
+          return await toBase64(await res.blob());
+        }
+      } catch (e) {
+        console.warn('Puter.js failed, falling back to Pollinations:', e);
+      }
+    }
+
+    // ── Fallback : Pollinations FLUX + Turbo en parallèle ───────────────────
+    const encoded = encodeURIComponent(prompt);
+    const seed = Math.floor(Math.random() * 999999);
+
+    const trySource = async (model: string, s: number): Promise<string> => {
+      const url = `https://image.pollinations.ai/prompt/${encoded}?model=${model}&width=1024&height=1024&nologo=true&seed=${s}`;
+      for (let i = 0; i < 7; i++) {
+        await new Promise(r => setTimeout(r, i === 0 ? 2000 : 1500));
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          if (blob.size < 8000) continue;
+          return await toBase64(blob);
+        } catch { continue; }
+      }
+      throw new Error(`${model} timeout`);
+    };
+
+    return await Promise.any([
+      trySource('flux', seed),
+      trySource('turbo', seed + 1),
+    ]);
   };
 
   // ─── FONCTION PRINCIPALE D'ENVOI (Groq) ──────────────────────────────────
