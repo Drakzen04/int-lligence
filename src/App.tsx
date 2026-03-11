@@ -335,6 +335,15 @@ export default function App() {
   const [showMascotHelp, setShowMascotHelp] = useState(false);
   const [mascotMessage, setMascotMessage] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const [showImageStudio, setShowImageStudio] = useState(false);
+  const [studioPrompt, setStudioPrompt] = useState('');
+  const [generatedImages, setGeneratedImages] = useState<{url: string; prompt: string; ts: number}[]>(() => {
+    try { return JSON.parse(localStorage.getItem('djiogo_gen_images') || '[]'); } catch { return []; }
+  });
+  const [studioLoading, setStudioLoading] = useState(false);
+  const [voiceCountdown, setVoiceCountdown] = useState<number | null>(null);
 
   // ─── Groq Client ──────────────────────────────────────────────────────────
   const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
@@ -439,6 +448,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('djiogo_image_count', imageCount.toString()); }, [imageCount]);
   useEffect(() => { localStorage.setItem('djiogo_limit_data', JSON.stringify(limitData)); }, [limitData]);
   useEffect(() => { localStorage.setItem('djiogo_admin', isAdmin.toString()); }, [isAdmin]);
+  useEffect(() => { localStorage.setItem('djiogo_gen_images', JSON.stringify(generatedImages)); }, [generatedImages]);
 
   useEffect(() => {
     const email = localStorage.getItem('djiogo_user_email');
@@ -481,13 +491,12 @@ export default function App() {
       return;
     }
 
-    // ─── Génération d'images via Pollinations.ai (gratuit, sans clé API) ───────
+    // ─── Génération d'images via Pollinations.ai ───────────────────────────
     if (isImageGen) {
       if (!textToSend.trim()) {
         setNotification("✏️ Décris l'image que tu veux générer !");
         return;
       }
-
       const userMsg: Message = {
         id: Date.now().toString(),
         role: 'user',
@@ -497,38 +506,25 @@ export default function App() {
       setMessages(prev => [...prev, userMsg]);
       setInput('');
       setIsLoading(true);
-
       try {
         const encodedPrompt = encodeURIComponent(textToSend);
         const seed = Math.floor(Math.random() * 999999);
-        // URL directe sans crossOrigin — Pollinations bloque le preload CORS
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
-
-        // On attend 3s que Pollinations commence à générer, puis on affiche directement
-        await new Promise(resolve => setTimeout(resolve, 3000));
-
+        // Délai de génération (Pollinations génère côté serveur ~3-5s)
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        const newEntry = { url: imageUrl, prompt: textToSend, ts: Date.now() };
+        setGeneratedImages(prev => [newEntry, ...prev.slice(0, 19)]);
         setMessages(prev => [...prev, {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: `✅ **Image générée !**\n\n**Prompt :** *${textToSend}*\n\n> 🎨 Propulsé par [Pollinations.ai](https://pollinations.ai) — Modèle FLUX`,
+          content: `✅ **Image générée !**\n\n**Prompt :** *${textToSend}*`,
           timestamp: Date.now(),
           image: imageUrl,
-          suggestions: [
-            `Même image en style aquarelle`,
-            `Même image en noir et blanc`,
-            `Génère une variation de cette image`,
-          ],
+          suggestions: [`Même image en style aquarelle`, `Même image en noir et blanc`, `Génère une variation de cette image`],
         }]);
-      } catch (err) {
-        setMessages(prev => [...prev, {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: "❌ **Erreur de génération.** Réessaie dans quelques secondes.",
-          timestamp: Date.now(),
-        }]);
-      } finally {
-        setIsLoading(false);
-      }
+      } catch {
+        setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: "❌ Erreur de génération. Réessaie.", timestamp: Date.now() }]);
+      } finally { setIsLoading(false); }
       return;
     }
 
@@ -701,17 +697,135 @@ export default function App() {
 
   const startVoiceInput = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return alert("Votre navigateur ne supporte pas la reconnaissance vocale.");
+    if (!SpeechRecognition) { setNotification("❌ Navigateur non compatible avec la reconnaissance vocale."); return; }
+
+    // Stop any existing recognition
+    if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch {} }
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
     const recognition = new SpeechRecognition();
     recognition.lang = 'fr-FR';
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
-    recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setInput(transcript);
-      if (isAutoSpeak) handleSend(transcript);
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
+
+    let finalTranscript = '';
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceCountdown(null);
     };
+
+    recognition.onresult = (event: any) => {
+      // Reset silence timer on each result
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      setVoiceCountdown(null);
+
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript + ' ';
+        } else {
+          interim = event.results[i][0].transcript;
+        }
+      }
+      setInput((finalTranscript + interim).trim());
+
+      // Start 3-second silence countdown
+      let count = 3;
+      setVoiceCountdown(count);
+      const countInterval = setInterval(() => {
+        count--;
+        if (count > 0) {
+          setVoiceCountdown(count);
+        } else {
+          clearInterval(countInterval);
+          setVoiceCountdown(null);
+        }
+      }, 1000);
+
+      silenceTimerRef.current = setTimeout(() => {
+        clearInterval(countInterval);
+        recognition.stop();
+        const textToSendNow = (finalTranscript + interim).trim();
+        if (textToSendNow) {
+          setInput('');
+          setIsListening(false);
+          handleSendVoice(textToSendNow);
+        }
+      }, 3000);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setVoiceCountdown(null);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    };
+
+    recognition.onerror = (e: any) => {
+      setIsListening(false);
+      setVoiceCountdown(null);
+      if (e.error !== 'no-speech') setNotification("Erreur micro : " + e.error);
+    };
+
     recognition.start();
+  };
+
+  const stopVoiceInput = () => {
+    if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch {} }
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    setIsListening(false);
+    setVoiceCountdown(null);
+  };
+
+  // Version vocale de handleSend qui lit la réponse à voix haute
+  const handleSendVoice = async (text: string) => {
+    if (!text.trim() || isLoading) return;
+    if (!GROQ_API_KEY || GROQ_API_KEY.length < 10) return;
+
+    const userMessage: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: Date.now() };
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+
+    try {
+      const groq = getGroqClient();
+      const systemPrompt = `${PERSONAS[persona]}\n${SYSTEM_INSTRUCTION_BASE}\nIMPORTANT MODE VOCAL : Réponds de façon courte, naturelle et conversationnelle, comme si tu parlais. Évite les listes à puces, les titres markdown. Réponds en 2-4 phrases maximum sauf si on te demande un détail.`;
+      const conversationHistory = messages.slice(-10).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      const completion = await groq.chat.completions.create({
+        model: GROQ_TEXT_MODEL,
+        messages: [{ role: 'system', content: systemPrompt }, ...conversationHistory, { role: 'user', content: text }],
+        max_tokens: 512,
+        temperature: 0.7,
+        stream: false,
+      });
+
+      let content = completion.choices[0]?.message?.content || "Je n'ai pas pu répondre.";
+      content = content.replace(/\[SUGGESTIONS:.*?\]/g, '').trim();
+
+      const assistantMessage: Message = { id: (Date.now()+1).toString(), role: 'assistant', content, timestamp: Date.now() };
+      setMessages(prev => [...prev, assistantMessage]);
+
+      // Lecture automatique de la réponse
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(content);
+      if (selectedVoice) {
+        const voice = availableVoices.find(v => v.name === selectedVoice);
+        if (voice) utterance.voice = voice;
+      } else { utterance.lang = 'fr-FR'; }
+      utterance.rate = voiceSpeed;
+      utterance.pitch = voicePitch;
+      setIsSpeaking(assistantMessage.id);
+      utterance.onend = () => {
+        setIsSpeaking(null);
+        // Relancer l'écoute automatiquement si mode mains libres
+        if (isAutoSpeak) setTimeout(() => startVoiceInput(), 500);
+      };
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      setNotification("Erreur lors de la réponse vocale.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const exportMarkdown = () => {
@@ -1024,6 +1138,113 @@ export default function App() {
     </motion.div>
   );
 
+  // ─── Image Studio Modal ────────────────────────────────────────────────
+  const generateStudioImage = async () => {
+    if (!studioPrompt.trim() || studioLoading) return;
+    setStudioLoading(true);
+    try {
+      const encodedPrompt = encodeURIComponent(studioPrompt);
+      const seed = Math.floor(Math.random() * 999999);
+      const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
+      await new Promise(resolve => setTimeout(resolve, 4000));
+      const newEntry = { url: imageUrl, prompt: studioPrompt, ts: Date.now() };
+      setGeneratedImages(prev => [newEntry, ...prev.slice(0, 19)]);
+      setStudioPrompt('');
+    } catch { setNotification("Erreur de génération."); }
+    finally { setStudioLoading(false); }
+  };
+
+  const ImageStudio = () => (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) setShowImageStudio(false); }}
+    >
+      <motion.div initial={{ scale: 0.92, y: 24 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.92, y: 24 }}
+        className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-3xl overflow-hidden"
+        style={{ background: 'linear-gradient(135deg, #0d0d1f 0%, #0a0a15 100%)', border: '1px solid rgba(99,102,241,0.2)' }}
+      >
+        <div className="flex items-center justify-between p-6 border-b border-white/5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }}>
+              <ImagePlus className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h2 className="font-display font-bold text-lg">Studio d'Images IA</h2>
+              <p className="text-[10px] text-white/30 uppercase tracking-widest">Génération • Modèle FLUX</p>
+            </div>
+          </div>
+          <button onClick={() => setShowImageStudio(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
+            <X className="w-5 h-5 text-white/40" />
+          </button>
+        </div>
+        <div className="p-6 border-b border-white/5">
+          <div className="flex gap-3">
+            <textarea value={studioPrompt} onChange={e => setStudioPrompt(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateStudioImage(); } }}
+              placeholder="Décris l'image à créer... ex: un tigre blanc dans une forêt de bambous au coucher du soleil"
+              className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm resize-none focus:outline-none focus:border-indigo-500/60 transition-all placeholder:text-white/20 min-h-[60px]"
+              rows={2}
+            />
+            <button onClick={generateStudioImage} disabled={!studioPrompt.trim() || studioLoading}
+              className={cn("px-6 rounded-2xl font-bold text-sm flex items-center gap-2 transition-all shrink-0",
+                studioLoading ? "bg-white/5 text-white/20 cursor-not-allowed" : "text-white shadow-lg hover:scale-105"
+              )}
+              style={!studioLoading ? { background: 'linear-gradient(135deg, #6366f1, #a855f7)' } : {}}
+            >
+              {studioLoading ? <><div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" /><span>En cours...</span></> : <><Sparkles className="w-4 h-4" /><span>Générer</span></>}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {["Portrait cinématique", "Paysage fantastique", "Architecture futuriste", "Nature macro HD", "Art abstrait coloré"].map(p => (
+              <button key={p} onClick={() => setStudioPrompt(p)}
+                className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] text-white/50 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-300 transition-all">
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 scrollbar-hide">
+          {studioLoading && (
+            <div className="flex items-center justify-center py-12 gap-4">
+              <div className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+              <span className="text-white/40 text-sm">Génération de l'image en cours...</span>
+            </div>
+          )}
+          {generatedImages.length === 0 && !studioLoading ? (
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <div className="w-16 h-16 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center mb-4">
+                <ImagePlus className="w-8 h-8 text-white/20" />
+              </div>
+              <p className="text-white/30 text-sm">Tes images générées apparaîtront ici</p>
+              <p className="text-white/15 text-xs mt-1">Jusqu'à 20 images sauvegardées automatiquement</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {generatedImages.map((img, i) => (
+                <motion.div key={img.ts} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.05 }}
+                  className="relative group rounded-2xl overflow-hidden bg-white/5 border border-white/10 aspect-square cursor-pointer"
+                  onClick={() => setPreviewImage(img.url)}
+                >
+                  <img src={img.url} alt={img.prompt} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    loading="lazy"
+                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-3">
+                    <p className="text-[10px] text-white/80 line-clamp-2">{img.prompt}</p>
+                    <div className="flex gap-2 mt-2">
+                      <button onClick={e => { e.stopPropagation(); setPreviewImage(img.url); }} className="flex-1 py-1 rounded-lg bg-white/20 text-[10px] text-white font-bold hover:bg-white/30 transition-all">Voir</button>
+                      <button onClick={e => { e.stopPropagation(); const a = document.createElement('a'); a.href = img.url; a.download = `djiogo-${img.ts}.jpg`; a.click(); }} className="px-3 py-1 rounded-lg bg-indigo-500/60 text-[10px] text-white font-bold hover:bg-indigo-500 transition-all">↓</button>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+
   return (
     <div className={cn(
       "flex h-screen overflow-hidden font-sans transition-all duration-700",
@@ -1034,6 +1255,7 @@ export default function App() {
       fontSize === 'xs' ? "text-xs" : fontSize === 'sm' ? "text-sm" : fontSize === 'base' ? "text-base" : "text-lg"
     )}>
       <AnimatePresence>{showPricing && <PricingModal />}</AnimatePresence>
+      <AnimatePresence>{showImageStudio && <ImageStudio />}</AnimatePresence>
 
       {/* Mascot */}
       <motion.div drag dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }} className="fixed bottom-24 right-8 z-[100] cursor-grab active:cursor-grabbing">
@@ -1439,7 +1661,23 @@ export default function App() {
                     )}
 
                     {message.image && (
-                      <img src={message.image} alt="Output" referrerPolicy="no-referrer" className="w-full max-h-80 object-cover rounded-xl mb-3 border border-white/10 cursor-zoom-in" onClick={() => setPreviewImage(message.image!)} />
+                      <div className="mb-3 rounded-xl overflow-hidden border border-white/10 bg-white/5">
+                        <img
+                          src={message.image}
+                          alt="Image générée"
+                          referrerPolicy="no-referrer"
+                          loading="lazy"
+                          className="w-full max-h-96 object-contain cursor-zoom-in transition-opacity duration-500"
+                          style={{ minHeight: '200px' }}
+                          onLoad={e => { (e.target as HTMLImageElement).style.opacity = '1'; }}
+                          onError={e => {
+                            const el = e.target as HTMLImageElement;
+                            el.style.opacity = '0.3';
+                            el.alt = "⚠️ Image en cours de génération, patiente quelques secondes puis rafraîchis";
+                          }}
+                          onClick={() => setPreviewImage(message.image!)}
+                        />
+                      </div>
                     )}
 
                     <MessageContent content={message.content} />
@@ -1541,118 +1779,87 @@ export default function App() {
                   className="fixed inset-0 z-[100] flex items-center justify-center overflow-hidden"
                   style={{ background: 'radial-gradient(ellipse at center, #0d0d1a 0%, #050508 100%)' }}
                 >
-                  {/* Animated background gradient */}
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
+                  <motion.div animate={{ rotate: 360 }} transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
                     className="absolute inset-[-50%] opacity-20 pointer-events-none"
                     style={{ background: 'conic-gradient(from 0deg, #6366f100, #6366f133, #a855f733, #6366f100)' }}
                   />
 
-                  {/* Transcript bubble */}
+                  {/* Live transcript */}
                   <AnimatePresence>
-                    {isListening && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -20, scale: 0.95 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                        className="absolute top-16 left-1/2 -translate-x-1/2 max-w-sm w-full mx-4 px-5 py-3 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl"
+                    {(isListening || input) && (
+                      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+                        className="absolute top-16 left-1/2 -translate-x-1/2 max-w-md w-full mx-4 px-5 py-3 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl"
                       >
                         <div className="flex items-center gap-2 mb-1">
                           <div className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
                           <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Transcription en direct</span>
                         </div>
-                        <p className="text-sm text-white/80 italic min-h-[20px]">
-                          {(input || '').length > 0 ? input : <span className="text-white/20">En attente de votre voix...</span>}
+                        <p className="text-sm text-white/80 min-h-[20px]">
+                          {input || <span className="text-white/20 italic">En attente de votre voix...</span>}
                         </p>
                       </motion.div>
                     )}
                   </AnimatePresence>
 
-                  {/* Main orb */}
+                  {/* Countdown */}
+                  <AnimatePresence>
+                    {voiceCountdown !== null && (
+                      <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }}
+                        className="absolute top-1/2 right-12 -translate-y-1/2 w-14 h-14 rounded-full bg-amber-500/20 border-2 border-amber-500/50 flex items-center justify-center"
+                      >
+                        <span className="text-2xl font-black text-amber-400">{voiceCountdown}</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
                   <div className="flex flex-col items-center gap-8 relative z-10">
                     <VoiceOrb isListening={isListening} isSpeaking={!!isSpeaking} accentColor={accentColor} />
 
-                    {/* Status text */}
                     <div className="flex flex-col items-center gap-3 text-center">
-                      <motion.div
-                        key={isListening ? 'listening' : isSpeaking ? 'speaking' : 'idle'}
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        className="flex flex-col items-center gap-1"
-                      >
-                        <span className={cn(
-                          "text-2xl font-light tracking-tight",
-                          isListening ? "text-red-300" : isSpeaking ? "text-indigo-300" : "text-white/60"
-                        )}>
-                          {isListening ? "Je vous écoute..." : isSpeaking ? "Djiogo.ai répond..." : "Dites quelque chose"}
+                      <motion.div key={isListening ? 'l' : isSpeaking ? 's' : 'i'} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+                        <span className={cn("text-2xl font-light tracking-tight", isListening ? "text-red-300" : isSpeaking ? "text-indigo-300" : "text-white/60")}>
+                          {isListening ? (voiceCountdown !== null ? `Envoi dans ${voiceCountdown}s...` : "Je vous écoute...") : isSpeaking ? "Djiogo.ai répond..." : "Appuyez sur le micro"}
                         </span>
-                        <motion.span
-                          animate={{ opacity: [0.3, 0.8, 0.3] }}
-                          transition={{ duration: 2, repeat: Infinity }}
-                          className="text-[11px] font-bold uppercase tracking-[0.3em] text-white/30"
+                        <motion.div animate={{ opacity: [0.3, 0.8, 0.3] }} transition={{ duration: 2, repeat: Infinity }}
+                          className="text-[11px] font-bold uppercase tracking-[0.3em] text-white/30 mt-1"
                         >
-                          {isListening ? "● Microphone actif" : isSpeaking ? "◉ Synthèse vocale" : "○ Mode mains libres"}
-                        </motion.span>
+                          {isListening ? "● Silence détecté = envoi auto" : isSpeaking ? "◉ Lecture en cours" : "○ Mode assistant vocal"}
+                        </motion.div>
                       </motion.div>
 
-                      {/* Sound wave bars (decorative) */}
+                      {/* Sound wave bars */}
                       <div className="flex items-center gap-1 h-8 mt-2">
                         {[...Array(20)].map((_, i) => (
-                          <motion.div
-                            key={i}
-                            animate={{
-                              height: isListening || isSpeaking
-                                ? [4, 4 + Math.sin(i * 0.9) * 20 + 10, 4]
-                                : 4,
-                              opacity: isListening || isSpeaking ? [0.4, 1, 0.4] : 0.15,
-                            }}
-                            transition={{ duration: 0.5 + (i % 5) * 0.1, repeat: Infinity, delay: i * 0.04, ease: 'easeInOut' }}
+                          <motion.div key={i}
+                            animate={{ height: isListening || isSpeaking ? [4, 4+Math.sin(i*0.9)*20+10, 4] : 4, opacity: isListening || isSpeaking ? [0.4, 1, 0.4] : 0.15 }}
+                            transition={{ duration: 0.5+(i%5)*0.1, repeat: Infinity, delay: i*0.04 }}
                             className="w-1 rounded-full"
-                            style={{ background: `linear-gradient(to top, #6366f1, #a855f7)` }}
+                            style={{ background: 'linear-gradient(to top, #6366f1, #a855f7)' }}
                           />
                         ))}
                       </div>
                     </div>
 
                     {/* Controls */}
-                    <div className="flex items-center gap-4 mt-4">
-                      <button
-                        onClick={startVoiceInput}
-                        className={cn(
-                          "w-14 h-14 rounded-full flex items-center justify-center border-2 transition-all",
-                          isListening
-                            ? "bg-red-500 border-red-400 shadow-lg shadow-red-500/40 scale-110"
-                            : "bg-white/10 border-white/20 hover:bg-white/20"
-                        )}
-                      >
-                        <Mic className="w-6 h-6 text-white" />
+                    <div className="flex items-center gap-5 mt-2">
+                      <button onClick={isListening ? stopVoiceInput : startVoiceInput}
+                        className={cn("w-16 h-16 rounded-full flex items-center justify-center border-2 transition-all shadow-lg",
+                          isListening ? "bg-red-500 border-red-400 shadow-red-500/40 scale-110 animate-pulse" : "bg-indigo-600 border-indigo-400 shadow-indigo-500/40 hover:scale-105"
+                        )}>
+                        <Mic className="w-7 h-7 text-white" />
                       </button>
-
-                      <button
-                        onClick={() => setIsAutoSpeak(false)}
-                        className="w-12 h-12 rounded-full flex items-center justify-center bg-white/5 border border-white/10 hover:bg-white/15 transition-all"
-                        title="Fermer"
-                      >
-                        <X className="w-5 h-5 text-white/60" />
+                      <button onClick={() => { stopVoiceInput(); window.speechSynthesis.cancel(); setIsSpeaking(null); setIsAutoSpeak(false); }}
+                        className="w-12 h-12 rounded-full flex items-center justify-center bg-white/5 border border-white/20 hover:bg-white/15 transition-all">
+                        <X className="w-5 h-5 text-white/70" />
                       </button>
-
-                      <button
-                        onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(null); }}
-                        className={cn(
-                          "w-12 h-12 rounded-full flex items-center justify-center border transition-all",
-                          isSpeaking ? "bg-indigo-500/20 border-indigo-500/50 text-indigo-400" : "bg-white/5 border-white/10 text-white/30"
-                        )}
-                        title="Arrêter la lecture"
-                      >
+                      <button onClick={() => { window.speechSynthesis.cancel(); setIsSpeaking(null); }}
+                        className={cn("w-12 h-12 rounded-full flex items-center justify-center border transition-all",
+                          isSpeaking ? "bg-indigo-500/30 border-indigo-500/60 text-indigo-300 shadow-lg shadow-indigo-500/20" : "bg-white/5 border-white/10 text-white/30"
+                        )}>
                         <Square className="w-4 h-4 fill-current" />
                       </button>
                     </div>
-
-                    <p className="text-[9px] text-white/20 font-bold uppercase tracking-widest">
-                      Djiogo.ai Voice • Powered by Groq LPU™
-                    </p>
+                    <p className="text-[9px] text-white/20 font-bold uppercase tracking-widest">Djiogo.ai Voice • Powered by Groq LPU™</p>
                   </div>
                 </motion.div>
               )}
@@ -1676,22 +1883,19 @@ export default function App() {
 
             <div className="relative glass rounded-2xl p-1 md:p-1.5 flex items-end gap-1 md:gap-1.5 shadow-2xl border border-white/10">
               <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
-              <div className="flex items-center gap-0.5">
+              <div className="flex items-center gap-1">
                 <button onClick={() => fileInputRef.current?.click()} className="p-2 rounded-xl hover:bg-white/5 text-white/30 hover:text-white transition-colors" title="Analyser une image (Vision)">
                   <ImageIcon className="w-4 h-4" />
                 </button>
+                {/* Bouton Studio — très visible */}
                 <button
-                  onClick={() => {
-                    if (!input.trim()) {
-                      setNotification("✏️ Décris l'image à générer dans le champ texte !");
-                      return;
-                    }
-                    handleSend(input, true);
-                  }}
-                  className="p-2 rounded-xl hover:bg-white/5 text-violet-400 hover:text-violet-300 transition-colors"
-                  title="Générer une image avec Pollinations AI (gratuit)"
+                  onClick={() => setShowImageStudio(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs text-white shadow-lg shadow-violet-500/30 hover:scale-105 active:scale-95 transition-all"
+                  style={{ background: 'linear-gradient(135deg, #7c3aed, #6366f1)' }}
+                  title="Studio d'Images IA"
                 >
-                  <ImagePlus className="w-4 h-4" />
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Images</span>
                 </button>
               </div>
 
@@ -1715,14 +1919,26 @@ export default function App() {
                 }}
               />
 
-              <div className="flex items-center gap-0.5">
-                <button onClick={() => setIsAutoSpeak(!isAutoSpeak)} className={cn("p-2 rounded-xl transition-colors", isAutoSpeak ? "text-indigo-400 bg-indigo-500/10" : "hover:bg-white/5 text-white/30 hover:text-white")} title="Mode mains libres">
-                  <Zap className={cn("w-4 h-4", isAutoSpeak && "fill-current")} />
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => { setIsAutoSpeak(true); setTimeout(() => startVoiceInput(), 300); }}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs transition-all shadow-lg hover:scale-105 active:scale-95",
+                    isListening ? "bg-red-500 text-white shadow-red-500/40 animate-pulse" :
+                    isAutoSpeak ? "bg-indigo-500/30 text-indigo-300 border border-indigo-500/50" :
+                    "text-white shadow-emerald-500/30"
+                  )}
+                  style={!isListening && !isAutoSpeak ? { background: 'linear-gradient(135deg, #059669, #10b981)' } : {}}
+                  title="Assistant Vocal"
+                >
+                  <Mic className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{isListening ? "..." : "Vocal"}</span>
                 </button>
-                <button onClick={startVoiceInput} className={cn("p-2 rounded-xl transition-colors", isListening ? "bg-red-500/20 text-red-500 animate-pulse" : "hover:bg-white/5 text-white/30 hover:text-white")} title="Entrée vocale">
-                  <Mic className="w-4 h-4" />
-                </button>
-                <button onClick={() => handleSend()} disabled={(!input.trim() && !selectedImage) || isLoading} className={cn("p-2 rounded-xl transition-all flex items-center justify-center", (input.trim() || selectedImage) && !isLoading ? `${accentColor === 'indigo' ? "bg-indigo-500" : accentColor === 'emerald' ? "bg-emerald-500" : "bg-rose-500"} text-white shadow-lg` : "bg-white/5 text-white/10 cursor-not-allowed")}>
+                <button onClick={() => handleSend()} disabled={(!input.trim() && !selectedImage) || isLoading}
+                  className={cn("p-2.5 rounded-xl transition-all flex items-center justify-center",
+                    (input.trim() || selectedImage) && !isLoading
+                      ? `${accentColor === 'indigo' ? "bg-indigo-500" : accentColor === 'emerald' ? "bg-emerald-500" : "bg-rose-500"} text-white shadow-lg`
+                      : "bg-white/5 text-white/10 cursor-not-allowed"
+                  )}>
                   <Send className="w-4 h-4" />
                 </button>
               </div>
