@@ -1119,8 +1119,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
         .replace(/\*(.*?)\*/g, '$1')
         .replace(/`{1,3}[^`]*`{1,3}/g, '')
         .replace(/^\s*[-•*]\s+/gm, '')
-        .replace(/
-{2,}/g, ' ')
+        .replace(/[\n\r]{2,}/g, ' ')
         .trim();
 
       // 3. Ajouter la réponse dans le chat
