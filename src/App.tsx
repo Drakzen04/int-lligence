@@ -3,51 +3,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Groq from 'groq-sdk';
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from "motion/react";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import { 
-  Send, 
-  Bot, 
-  User, 
-  Sparkles, 
-  Trash2, 
-  Plus, 
-  MessageSquare,
-  ChevronRight,
-  Github,
-  Twitter,
-  Cpu,
-  Image as ImageIcon,
-  Volume2,
-  Download,
-  Mic,
-  ImagePlus,
-  Languages,
-  Zap,
-  History,
-  Lightbulb,
-  FileText,
-  Search as SearchIcon,
-  Clock,
-  BrainCircuit,
-  Quote,
-  Save,
-  FileDown,
-  Activity,
-  Smile,
-  Settings,
-  FolderOpen,
-  ShieldCheck,
-  Wand2,
-  X,
-  Check,
-  Palette,
-  Copy,
-  Square,
-  Type
+  Send, Bot, User, Sparkles, Trash2, Plus, MessageSquare, ChevronRight,
+  Github, Twitter, Cpu, Image as ImageIcon, Volume2, Download, Mic,
+  ImagePlus, Languages, Zap, History, Lightbulb, FileText, Search as SearchIcon,
+  Clock, BrainCircuit, Quote, Save, FileDown, Activity, Smile, Settings,
+  FolderOpen, ShieldCheck, Wand2, X, Check, Palette, Copy, Square, Type,
+  Play, RotateCcw, Terminal, Star, Heart, Bookmark, Share2, ThumbsUp,
+  ThumbsDown, Globe, Moon, Sun, Headphones, Music, Camera, Maximize2,
+  Minimize2, RefreshCw, AlertCircle, Info, Eye, EyeOff, Lock, Unlock,
+  TrendingUp, BarChart2, PieChart, ChevronDown, ChevronUp, Filter,
+  Code2, Braces, Hash
 } from "lucide-react";
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -57,85 +28,194 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// ─── Composant de rendu de graphes (style Claude) ─────────────────────────
+// ─── Composant de rendu de graphes ────────────────────────────────────────
+const CHART_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js';
+let chartJsLoading = false;
+let chartJsLoaded = false;
+const chartJsCallbacks: (() => void)[] = [];
+
+function loadChartJs(cb: () => void) {
+  if (chartJsLoaded) { cb(); return; }
+  chartJsCallbacks.push(cb);
+  if (chartJsLoading) return;
+  chartJsLoading = true;
+  const s = document.createElement('script');
+  s.src = CHART_CDN;
+  s.onload = () => {
+    chartJsLoaded = true;
+    chartJsLoading = false;
+    chartJsCallbacks.forEach(f => f());
+    chartJsCallbacks.length = 0;
+  };
+  document.head.appendChild(s);
+}
+
 const GraphRenderer = ({ graphJson }: { graphJson: string }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<any>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     let data: any;
-    try { data = JSON.parse(graphJson); } catch { return; }
-    if (!canvasRef.current) return;
+    try { data = JSON.parse(graphJson); } catch { setError('JSON invalide'); return; }
 
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    if (chartRef.current) { chartRef.current.destroy(); }
-
-    const colors = data.datasets?.map((d: any, i: number) =>
-      d.color || ['#6366f1','#22d3ee','#f59e0b','#10b981','#f43f5e'][i % 5]
-    );
-
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js';
-    script.onload = () => {
+    const buildChart = () => {
+      if (!canvasRef.current) return;
+      if (chartRef.current) { try { chartRef.current.destroy(); } catch {} chartRef.current = null; }
       const Chart = (window as any).Chart;
-      if (!Chart || !canvasRef.current) return;
-      chartRef.current = new Chart(canvasRef.current, {
-        type: data.type || 'line',
-        data: {
-          labels: data.labels || [],
-          datasets: (data.datasets || []).map((ds: any, i: number) => ({
-            label: ds.label || '',
-            data: ds.data || [],
-            borderColor: colors[i],
-            backgroundColor: data.type === 'pie' ? colors : colors[i] + '33',
-            borderWidth: 2,
-            tension: 0.4,
-            fill: data.type === 'line',
-            pointBackgroundColor: colors[i],
-            pointRadius: 4,
-          })),
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: { labels: { color: '#ffffff99', font: { size: 11 } } },
-            title: { display: !!data.title, text: data.title, color: '#ffffffcc', font: { size: 13, weight: 'bold' } },
+      if (!Chart) return;
+      const COLORS = ['#6366f1','#22d3ee','#f59e0b','#10b981','#f43f5e','#ec4899','#8b5cf6'];
+      const colors = (data.datasets || []).map((d: any, i: number) => d.color || COLORS[i % COLORS.length]);
+      try {
+        chartRef.current = new Chart(canvasRef.current, {
+          type: data.type || 'bar',
+          data: {
+            labels: data.labels || [],
+            datasets: (data.datasets || []).map((ds: any, i: number) => ({
+              label: ds.label || '',
+              data: ds.data || [],
+              borderColor: colors[i],
+              backgroundColor: data.type === 'pie' || data.type === 'doughnut'
+                ? colors.map((c: string) => c + 'cc')
+                : colors[i] + '55',
+              borderWidth: 2,
+              tension: 0.4,
+              fill: data.type === 'line',
+              pointBackgroundColor: colors[i],
+              pointRadius: 5,
+              pointHoverRadius: 7,
+            })),
           },
-          scales: data.type === 'pie' ? {} : {
-            x: { ticks: { color: '#ffffff66' }, grid: { color: '#ffffff11' } },
-            y: { ticks: { color: '#ffffff66' }, grid: { color: '#ffffff11' } },
+          options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            animation: { duration: 800, easing: 'easeInOutQuart' },
+            plugins: {
+              legend: { labels: { color: '#ffffff99', font: { size: 11 }, padding: 16 } },
+              title: { display: !!data.title, text: data.title || '', color: '#ffffffcc', font: { size: 13, weight: 'bold' }, padding: { bottom: 12 } },
+              tooltip: { backgroundColor: '#1e1e2e', titleColor: '#fff', bodyColor: '#ffffff99', borderColor: '#ffffff22', borderWidth: 1, padding: 10, cornerRadius: 8 },
+            },
+            scales: (data.type === 'pie' || data.type === 'doughnut') ? {} : {
+              x: { ticks: { color: '#ffffff66', font: { size: 10 } }, grid: { color: '#ffffff0d' }, border: { color: '#ffffff11' } },
+              y: { ticks: { color: '#ffffff66', font: { size: 10 } }, grid: { color: '#ffffff0d' }, border: { color: '#ffffff11' } },
+            },
           },
-        },
-      });
+        });
+      } catch (e) { setError('Erreur rendu chart'); }
     };
-    if (!(window as any).Chart) {
-      document.head.appendChild(script);
-    } else {
-      script.onload!(new Event('load'));
-    }
-    return () => { if (chartRef.current) chartRef.current.destroy(); };
+
+    loadChartJs(buildChart);
+    return () => { if (chartRef.current) { try { chartRef.current.destroy(); } catch {} } };
   }, [graphJson]);
 
+  if (error) return <div className="my-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400">{error}</div>;
+
   return (
-    <div className="my-4 p-4 rounded-2xl bg-white/5 border border-white/10">
-      <canvas ref={canvasRef} height={220} />
+    <div className="my-4 p-4 rounded-2xl border" style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.2)' }}>
+      <canvas ref={canvasRef} style={{ maxHeight: '280px' }} />
     </div>
   );
 };
 
-// ─── Rendu du contenu avec graphes intégrés ──────────────────────────────
+// ─── Exécuteur de code ────────────────────────────────────────────────────
+const CodeExecutor = ({ code, lang }: { code: string; lang: string }) => {
+  const [output, setOutput] = useState('');
+  const [running, setRunning] = useState(false);
+  const [show, setShow] = useState(false);
+
+  const runCode = () => {
+    if (lang !== 'javascript' && lang !== 'js') {
+      setOutput(`⚠️ Exécution disponible pour JavaScript uniquement.\nLangue détectée: ${lang || 'inconnu'}`);
+      setShow(true);
+      return;
+    }
+    setRunning(true);
+    setShow(true);
+    setOutput('');
+    const logs: string[] = [];
+    const fakeConsole = {
+      log: (...args: any[]) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ')),
+      error: (...args: any[]) => logs.push('❌ ' + args.join(' ')),
+      warn: (...args: any[]) => logs.push('⚠️ ' + args.join(' ')),
+      info: (...args: any[]) => logs.push('ℹ️ ' + args.join(' ')),
+    };
+    try {
+      const fn = new Function('console', code);
+      const result = fn(fakeConsole);
+      if (result !== undefined) logs.push('→ ' + JSON.stringify(result));
+      setOutput(logs.join('\n') || '✅ Exécuté sans sortie.');
+    } catch (e: any) {
+      setOutput('❌ Erreur: ' + e.message);
+    }
+    setRunning(false);
+  };
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <button onClick={runCode} disabled={running}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all hover:scale-105 active:scale-95"
+          style={{ background: 'linear-gradient(135deg, #059669, #10b981)', color: '#fff', boxShadow: '0 4px 12px rgba(16,185,129,0.3)' }}
+        >
+          <Play className="w-3 h-3 fill-current" />
+          {running ? 'Exécution...' : 'Exécuter'}
+        </button>
+        <button onClick={() => navigator.clipboard.writeText(code)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 transition-all">
+          <Copy className="w-3 h-3" /> Copier
+        </button>
+        {show && <button onClick={() => setShow(false)} className="text-white/30 hover:text-white/60 transition-colors"><X className="w-3.5 h-3.5" /></button>}
+      </div>
+      <AnimatePresence>
+        {show && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+            className="mt-2 rounded-xl overflow-hidden border border-emerald-500/20"
+            style={{ background: 'rgba(0,0,0,0.6)' }}
+          >
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5">
+              <Terminal className="w-3 h-3 text-emerald-400" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">Sortie</span>
+            </div>
+            <pre className="px-4 py-3 text-[11px] text-emerald-300 font-mono overflow-x-auto whitespace-pre-wrap">{output || '...'}</pre>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+// ─── Rendu du contenu avec graphes + code exécutable ─────────────────────
 const MessageContent = ({ content }: { content: string }) => {
-  const parts = content.split(/\[GRAPH:(.*?)\]/gs);
+  // Split on [GRAPH:...] blocks
+  const parts = content.split(/(\[GRAPH:[\s\S]*?\])/g);
   return (
     <div className="markdown-body">
       {parts.map((part, i) => {
-        if (i % 2 === 1) {
-          return <GraphRenderer key={i} graphJson={part.trim()} />;
-        }
+        const graphMatch = part.match(/^\[GRAPH:([\s\S]*?)\]$/);
+        if (graphMatch) return <GraphRenderer key={i} graphJson={graphMatch[1].trim()} />;
         return (
           <Markdown key={i} components={{
+            code({ node, className, children, ...props }: any) {
+              const match = /language-(\w+)/.exec(className || '');
+              const lang = match ? match[1] : '';
+              const codeStr = String(children).replace(/\n$/, '');
+              const isBlock = codeStr.includes('\n') || codeStr.length > 60;
+              if (!isBlock) return <code className="font-mono px-1.5 py-0.5 rounded text-xs bg-white/10 text-indigo-300">{children}</code>;
+              return (
+                <div className="my-3 rounded-xl overflow-hidden border border-white/10" style={{ background: 'rgba(0,0,0,0.5)' }}>
+                  <div className="flex items-center justify-between px-4 py-2 border-b border-white/5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+                      <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
+                      <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
+                      <span className="ml-2 text-[10px] font-bold uppercase tracking-widest text-white/30">{lang || 'code'}</span>
+                    </div>
+                  </div>
+                  <pre className="px-4 py-3 text-xs font-mono text-white/80 overflow-x-auto"><code>{children}</code></pre>
+                  {(lang === 'javascript' || lang === 'js') && <div className="px-4 pb-3"><CodeExecutor code={codeStr} lang={lang} /></div>}
+                </div>
+              );
+            },
             img: ({ ...props }) => (
               <img {...props} referrerPolicy="no-referrer" className="max-w-full h-auto rounded-xl my-2 border border-white/10" />
             ),
@@ -147,6 +227,125 @@ const MessageContent = ({ content }: { content: string }) => {
           </Markdown>
         );
       })}
+    </div>
+  );
+};
+
+// ─── VoiceOrb — Goute d'eau liquide avec gyroscope ───────────────────────
+const VoiceOrb = ({ isListening, isSpeaking, accentColor }: {
+  isListening: boolean; isSpeaking: boolean; accentColor: string;
+}) => {
+  const baseColor = accentColor === 'emerald' ? '#10b981' : accentColor === 'rose' ? '#f43f5e' : '#6366f1';
+  const secColor  = accentColor === 'emerald' ? '#22d3ee' : accentColor === 'rose' ? '#f59e0b' : '#a855f7';
+  const tiltX = useMotionValue(0);
+  const tiltY = useMotionValue(0);
+  const springX = useSpring(tiltX, { stiffness: 80, damping: 15 });
+  const springY = useSpring(tiltY, { stiffness: 80, damping: 15 });
+  const rotateX = useTransform(springY, [-30, 30], ['15deg', '-15deg']);
+  const rotateY = useTransform(springX, [-30, 30], ['-15deg', '15deg']);
+
+  useEffect(() => {
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      if (e.beta !== null) tiltY.set(Math.max(-30, Math.min(30, e.beta - 45)));
+      if (e.gamma !== null) tiltX.set(Math.max(-30, Math.min(30, e.gamma)));
+    };
+    const handleMouse = (e: MouseEvent) => {
+      const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+      tiltX.set((e.clientX - cx) / cx * 20);
+      tiltY.set((e.clientY - cy) / cy * 20);
+    };
+    window.addEventListener('deviceorientation', handleOrientation);
+    window.addEventListener('mousemove', handleMouse);
+    return () => { window.removeEventListener('deviceorientation', handleOrientation); window.removeEventListener('mousemove', handleMouse); };
+  }, []);
+
+  const bars = 40;
+  return (
+    <div className="relative flex items-center justify-center w-72 h-72" style={{ perspective: '600px' }}>
+      {/* Outer ambient glow */}
+      <motion.div
+        animate={{ scale: isListening ? [1,1.3,1] : isSpeaking ? [1,1.15,1] : [1,1.05,1], opacity: isListening ? [0.4,0.8,0.4] : [0.15,0.3,0.15] }}
+        transition={{ duration: isListening ? 0.7 : 2.5, repeat: Infinity }}
+        className="absolute inset-[-30px] rounded-full pointer-events-none"
+        style={{ background: `radial-gradient(circle, ${baseColor}44 0%, transparent 65%)` }}
+      />
+      {/* Second glow ring */}
+      <motion.div
+        animate={{ scale: [1.1,1.4,1.1], opacity: [0.08,0.18,0.08] }}
+        transition={{ duration: 3.5, repeat: Infinity, delay: 0.4 }}
+        className="absolute inset-[-60px] rounded-full pointer-events-none"
+        style={{ background: `radial-gradient(circle, ${secColor}33 0%, transparent 60%)` }}
+      />
+
+      {/* Audio bars ring */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        {[...Array(bars)].map((_, i) => (
+          <motion.div key={i}
+            animate={{
+              height: isListening || isSpeaking ? [3, 3 + Math.sin(i * 1.1) * 22 + 9, 3] : 3,
+              opacity: isListening || isSpeaking ? [0.3, 0.9, 0.3] : 0.15,
+            }}
+            transition={{ duration: 0.35 + (i % 7) * 0.08, repeat: Infinity, delay: (i / bars) * 0.6, ease: 'easeInOut' }}
+            style={{
+              position: 'absolute', width: '2.5px', borderRadius: '3px',
+              background: `linear-gradient(to top, ${baseColor}, ${secColor})`,
+              transformOrigin: 'center 115px',
+              transform: `rotate(${(i / bars) * 360}deg) translateY(-115px)`,
+            }}
+          />
+        ))}
+      </div>
+
+      {/* The water drop orb — tilts with gyro/mouse */}
+      <motion.div style={{ rotateX, rotateY, transformStyle: 'preserve-3d' }}
+        className="relative"
+      >
+        <motion.div
+          animate={{
+            borderRadius: isListening
+              ? ['42% 58% 65% 35% / 45% 38% 62% 55%','55% 45% 38% 62% / 58% 55% 45% 42%','42% 58% 65% 35% / 45% 38% 62% 55%']
+              : isSpeaking
+              ? ['48% 52% 58% 42% / 50% 45% 55% 50%','52% 48% 42% 58% / 45% 55% 45% 55%','48% 52% 58% 42% / 50% 45% 55% 50%']
+              : ['50% 50% 50% 50% / 60% 60% 40% 40%','48% 52% 52% 48% / 62% 58% 42% 38%','50% 50% 50% 50% / 60% 60% 40% 40%'],
+            scale: isListening ? [1, 1.08, 0.96, 1] : isSpeaking ? [1, 1.05, 0.98, 1] : [1, 1.02, 1],
+          }}
+          transition={{ duration: isListening ? 0.7 : 2.8, repeat: Infinity, ease: 'easeInOut' }}
+          className="w-36 h-36 flex items-center justify-center relative overflow-hidden"
+          style={{
+            background: `radial-gradient(135deg at 35% 30%, ${secColor}ee 0%, ${baseColor}cc 45%, ${baseColor}88 100%)`,
+            boxShadow: `0 0 50px ${baseColor}88, 0 0 100px ${baseColor}33, inset 0 0 40px ${secColor}22`,
+          }}
+        >
+          {/* Water caustic shine effect */}
+          <motion.div
+            animate={{ x: [-8, 8, -8], y: [-4, 4, -4], opacity: [0.6, 0.9, 0.6] }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+            className="absolute top-3 left-5 w-12 h-6 rounded-full blur-md"
+            style={{ background: 'rgba(255,255,255,0.3)' }}
+          />
+          <motion.div
+            animate={{ x: [4, -4, 4], y: [2, -2, 2], opacity: [0.2, 0.4, 0.2] }}
+            transition={{ duration: 4, repeat: Infinity, delay: 0.5 }}
+            className="absolute bottom-6 right-4 w-6 h-3 rounded-full blur-sm"
+            style={{ background: 'rgba(255,255,255,0.2)' }}
+          />
+          {/* Icon */}
+          <AnimatePresence mode="wait">
+            {isListening ? (
+              <motion.div key="mic" initial={{ opacity: 0, scale: 0.3 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.3 }}>
+                <Mic className="w-12 h-12 text-white drop-shadow-2xl" />
+              </motion.div>
+            ) : isSpeaking ? (
+              <motion.div key="vol" initial={{ opacity: 0, scale: 0.3 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.3 }}>
+                <Volume2 className="w-12 h-12 text-white drop-shadow-2xl" />
+              </motion.div>
+            ) : (
+              <motion.div key="g" initial={{ opacity: 0 }} animate={{ opacity: 0.9 }}
+                className="text-4xl font-black text-white italic tracking-tighter drop-shadow-2xl select-none">G</motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+      </motion.div>
     </div>
   );
 };
@@ -194,99 +393,6 @@ Types disponibles : "line", "bar", "pie", "scatter"
 const GROQ_TEXT_MODEL = 'llama-3.3-70b-versatile';
 // Modèle vision (pour analyser les images)
 const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
-
-// ─── VoiceOrb stylisé (style Perplexity / Gemini) ────────────────────────
-const VoiceOrb = ({ isListening, isSpeaking, accentColor, voiceLevel = 0 }: {
-  isListening: boolean;
-  isSpeaking: boolean;
-  accentColor: string;
-  voiceLevel?: number;
-}) => {
-  const bars = 32;
-  const baseColor = accentColor === 'emerald' ? '#10b981' : accentColor === 'rose' ? '#f43f5e' : '#6366f1';
-  const secColor = accentColor === 'emerald' ? '#22d3ee' : accentColor === 'rose' ? '#f59e0b' : '#a855f7';
-
-  return (
-    <div className="relative flex flex-col items-center justify-center w-64 h-64">
-      {/* Outer glow rings */}
-      <motion.div
-        animate={{ scale: isListening ? [1, 1.15, 1] : isSpeaking ? [1, 1.08, 1] : [1, 1.03, 1], opacity: isListening ? [0.3, 0.6, 0.3] : [0.1, 0.2, 0.1] }}
-        transition={{ duration: isListening ? 0.8 : 2.5, repeat: Infinity, ease: 'easeInOut' }}
-        className="absolute inset-0 rounded-full"
-        style={{ background: `radial-gradient(circle, ${baseColor}33 0%, transparent 70%)` }}
-      />
-      <motion.div
-        animate={{ scale: isListening ? [1, 1.25, 1] : [1, 1.05, 1], opacity: isListening ? [0.15, 0.3, 0.15] : [0.05, 0.1, 0.05] }}
-        transition={{ duration: isListening ? 0.8 : 3, repeat: Infinity, ease: 'easeInOut', delay: 0.2 }}
-        className="absolute inset-[-20px] rounded-full"
-        style={{ background: `radial-gradient(circle, ${secColor}22 0%, transparent 70%)` }}
-      />
-
-      {/* Audio bars ring */}
-      <div className="absolute inset-0 flex items-center justify-center">
-        {[...Array(bars)].map((_, i) => {
-          const angle = (i / bars) * 360;
-          const isActive = isListening || isSpeaking;
-          const barHeight = isActive ? 8 + Math.random() * (voiceLevel * 30 + 12) : 4;
-          return (
-            <motion.div
-              key={i}
-              animate={{ height: isActive ? [4, 4 + Math.sin(i * 0.8) * 20 + 8, 4] : 4, opacity: isActive ? [0.4, 1, 0.4] : 0.2 }}
-              transition={{ duration: 0.4 + Math.random() * 0.6, repeat: Infinity, delay: (i / bars) * 0.5, ease: 'easeInOut' }}
-              style={{
-                position: 'absolute',
-                width: '3px',
-                borderRadius: '2px',
-                background: `linear-gradient(to top, ${baseColor}, ${secColor})`,
-                transformOrigin: 'center 110px',
-                transform: `rotate(${angle}deg) translateY(-110px)`,
-                height: `${barHeight}px`,
-              }}
-            />
-          );
-        })}
-      </div>
-
-      {/* Central orb */}
-      <motion.div
-        animate={{
-          scale: isListening ? [1, 1.12, 0.95, 1] : isSpeaking ? [1, 1.06, 0.98, 1] : [1, 1.02, 1],
-          borderRadius: isListening
-            ? ['50%', '45% 55% 55% 45%', '55% 45% 45% 55%', '50%']
-            : ['50%', '48% 52% 52% 48%', '50%'],
-        }}
-        transition={{ duration: isListening ? 0.6 : 2.5, repeat: Infinity, ease: 'easeInOut' }}
-        className="relative w-28 h-28 flex items-center justify-center"
-        style={{
-          background: `radial-gradient(135deg, ${baseColor}cc 0%, ${secColor}88 50%, ${baseColor}44 100%)`,
-          boxShadow: `0 0 40px ${baseColor}66, 0 0 80px ${baseColor}33, inset 0 0 30px ${secColor}22`,
-        }}
-      >
-        {/* Inner shine */}
-        <div className="absolute inset-0 rounded-full overflow-hidden">
-          <div className="absolute top-2 left-4 w-8 h-4 rounded-full bg-white/20 blur-sm" />
-        </div>
-
-        {/* Icon */}
-        <AnimatePresence mode="wait">
-          {isListening ? (
-            <motion.div key="mic" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} transition={{ duration: 0.2 }}>
-              <Mic className="w-10 h-10 text-white drop-shadow-lg" />
-            </motion.div>
-          ) : isSpeaking ? (
-            <motion.div key="vol" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} transition={{ duration: 0.2 }}>
-              <Volume2 className="w-10 h-10 text-white drop-shadow-lg" />
-            </motion.div>
-          ) : (
-            <motion.div key="logo" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-3xl font-black text-white italic tracking-tighter drop-shadow-lg">
-              G
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-    </div>
-  );
-};
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>(() => {
@@ -338,12 +444,18 @@ export default function App() {
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
   const [showImageStudio, setShowImageStudio] = useState(false);
-  const [studioPrompt, setStudioPrompt] = useState('');
-  const [generatedImages, setGeneratedImages] = useState<{url: string; prompt: string; ts: number}[]>(() => {
-    try { return JSON.parse(localStorage.getItem('djiogo_gen_images') || '[]'); } catch { return []; }
+  const [generatedImages, setGeneratedImages] = useState<{dataUrl: string; prompt: string; ts: number}[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('djiogo_gen_images') || '[]');
+      return saved.filter((img: any) => img.dataUrl && img.dataUrl.startsWith('data:'));
+    } catch { return []; }
   });
   const [studioLoading, setStudioLoading] = useState(false);
-  const [voiceCountdown, setVoiceCountdown] = useState<number | null>(null);
+  const [studioProgress, setStudioProgress] = useState(0);
+  const [pinnedMessages, setPinnedMessages] = useState<string[]>([]);
+  const [likedMessages, setLikedMessages] = useState<string[]>([]);
+  const [showStats, setShowStats] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // ─── Groq Client ──────────────────────────────────────────────────────────
   const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
@@ -493,16 +605,8 @@ export default function App() {
 
     // ─── Génération d'images via Pollinations.ai ───────────────────────────
     if (isImageGen) {
-      if (!textToSend.trim()) {
-        setNotification("✏️ Décris l'image que tu veux générer !");
-        return;
-      }
-      const userMsg: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: `🎨 Génère une image : ${textToSend}`,
-        timestamp: Date.now(),
-      };
+      if (!textToSend.trim()) { setNotification("✏️ Décris l'image que tu veux générer !"); return; }
+      const userMsg: Message = { id: Date.now().toString(), role: 'user', content: `🎨 Génère une image : ${textToSend}`, timestamp: Date.now() };
       setMessages(prev => [...prev, userMsg]);
       setInput('');
       setIsLoading(true);
@@ -510,18 +614,25 @@ export default function App() {
         const encodedPrompt = encodeURIComponent(textToSend);
         const seed = Math.floor(Math.random() * 999999);
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
-        // Délai de génération (Pollinations génère côté serveur ~3-5s)
-        await new Promise(resolve => setTimeout(resolve, 4000));
-        const newEntry = { url: imageUrl, prompt: textToSend, ts: Date.now() };
+        let dataUrl = '';
+        let attempts = 0;
+        while (attempts < 10) {
+          attempts++;
+          try {
+            await new Promise(r => setTimeout(r, attempts === 1 ? 3000 : 2000));
+            const res = await fetch(imageUrl, { cache: 'no-store' });
+            if (!res.ok) throw new Error('not ready');
+            const blob = await res.blob();
+            if (blob.size < 5000) throw new Error('too small');
+            dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob);
+            });
+            break;
+          } catch { if (attempts >= 10) throw new Error('failed'); }
+        }
+        const newEntry = { dataUrl, prompt: textToSend, ts: Date.now() };
         setGeneratedImages(prev => [newEntry, ...prev.slice(0, 19)]);
-        setMessages(prev => [...prev, {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: `✅ **Image générée !**\n\n**Prompt :** *${textToSend}*`,
-          timestamp: Date.now(),
-          image: imageUrl,
-          suggestions: [`Même image en style aquarelle`, `Même image en noir et blanc`, `Génère une variation de cette image`],
-        }]);
+        setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: `✅ **Image générée !**\n\n**Prompt :** *${textToSend}*`, timestamp: Date.now(), image: dataUrl, suggestions: [`Même image en style aquarelle`, `Même image en noir et blanc`, `Génère une variation de cette image`] }]);
       } catch {
         setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: "❌ Erreur de génération. Réessaie.", timestamp: Date.now() }]);
       } finally { setIsLoading(false); }
@@ -699,27 +810,21 @@ export default function App() {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) { setNotification("❌ Navigateur non compatible avec la reconnaissance vocale."); return; }
 
-    // Stop any existing recognition
     if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch {} }
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
     const recognition = new SpeechRecognition();
-    recognition.lang = 'fr-FR';
+    recognition.lang = voiceLang;
     recognition.continuous = true;
     recognition.interimResults = true;
     recognitionRef.current = recognition;
 
     let finalTranscript = '';
 
-    recognition.onstart = () => {
-      setIsListening(true);
-      setVoiceCountdown(null);
-    };
+    recognition.onstart = () => { setIsListening(true); };
 
     recognition.onresult = (event: any) => {
-      // Reset silence timer on each result
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      setVoiceCountdown(null);
 
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -731,21 +836,8 @@ export default function App() {
       }
       setInput((finalTranscript + interim).trim());
 
-      // Start 3-second silence countdown
-      let count = 3;
-      setVoiceCountdown(count);
-      const countInterval = setInterval(() => {
-        count--;
-        if (count > 0) {
-          setVoiceCountdown(count);
-        } else {
-          clearInterval(countInterval);
-          setVoiceCountdown(null);
-        }
-      }, 1000);
-
+      // 2.5 second silence → auto send
       silenceTimerRef.current = setTimeout(() => {
-        clearInterval(countInterval);
         recognition.stop();
         const textToSendNow = (finalTranscript + interim).trim();
         if (textToSendNow) {
@@ -753,18 +845,16 @@ export default function App() {
           setIsListening(false);
           handleSendVoice(textToSendNow);
         }
-      }, 3000);
+      }, 2500);
     };
 
     recognition.onend = () => {
       setIsListening(false);
-      setVoiceCountdown(null);
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     };
 
     recognition.onerror = (e: any) => {
       setIsListening(false);
-      setVoiceCountdown(null);
       if (e.error !== 'no-speech') setNotification("Erreur micro : " + e.error);
     };
 
@@ -775,7 +865,6 @@ export default function App() {
     if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch {} }
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     setIsListening(false);
-    setVoiceCountdown(null);
   };
 
   // Version vocale de handleSend qui lit la réponse à voix haute
@@ -965,6 +1054,105 @@ export default function App() {
 
   const clearChat = () => { setMessages([]); };
 
+  // ─── 15 Nouvelles Fonctionnalités ────────────────────────────────────────
+
+  // 1. Épingler un message
+  const togglePin = (id: string) => {
+    setPinnedMessages(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    setNotification(pinnedMessages.includes(id) ? "📌 Message désépinglé" : "📌 Message épinglé !");
+  };
+
+  // 2. Liker un message
+  const toggleLike = (id: string) => {
+    setLikedMessages(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  // 3. Traduction rapide d'un message
+  const translateMessage = (content: string, targetLang: string) => {
+    handleSend(`Traduis ce texte en ${targetLang} :\n\n${content}`);
+  };
+
+  // 4. Continuer un message
+  const continueMessage = (content: string) => {
+    handleSend(`Continue ce texte en gardant le même style :\n\n${content}`);
+  };
+
+  // 5. Améliorer un message
+  const improveMessage = (content: string) => {
+    handleSend(`Améliore et enrichis ce texte :\n\n${content}`);
+  };
+
+  // 6. Résumer un message
+  const summarizeMessage = (content: string) => {
+    handleSend(`Résume ce texte en 3 phrases maximum :\n\n${content}`);
+  };
+
+  // 7. Fullscreen toggle
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
+  // 8. Stats de la conversation
+  const getChatStats = () => {
+    const totalWords = messages.reduce((acc, m) => acc + m.content.split(' ').length, 0);
+    const userMsgs = messages.filter(m => m.role === 'user').length;
+    const aiMsgs = messages.filter(m => m.role === 'assistant').length;
+    const images = messages.filter(m => m.image).length;
+    return { totalWords, userMsgs, aiMsgs, images, total: messages.length };
+  };
+
+  // 9. Exporter en TXT
+  const exportTXT = () => {
+    const content = messages.map(m => `[${m.role === 'user' ? 'VOUS' : 'DJIOGO.AI'}]\n${m.content}\n`).join('\n─────\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `djiogo-chat-${Date.now()}.txt`;
+    a.click();
+    setNotification("📄 Exporté en TXT !");
+  };
+
+  // 10. Partager via lien (copie dans presse-papiers)
+  const shareChat = () => {
+    const summary = messages.slice(-3).map(m => `${m.role === 'user' ? 'Q' : 'R'}: ${m.content.slice(0, 80)}`).join('\n');
+    navigator.clipboard.writeText(`Conversation Djiogo.ai :\n${summary}\n\nhttps://djiogo.ai`);
+    setNotification("🔗 Résumé copié !");
+  };
+
+  // 11. Régénérer la dernière réponse
+  const regenerateLastResponse = () => {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    if (lastUserMsg) {
+      setMessages(prev => prev.filter(m => m.id !== messages[messages.length - 1]?.id));
+      handleSend(lastUserMsg.content);
+    }
+  };
+
+  // 12. Mode focus (cache la sidebar)
+  const [focusMode, setFocusMode] = useState(false);
+
+  // 13. Compteur de tokens estimé
+  const estimateTokens = (text: string) => Math.ceil(text.split(/\s+/).length * 1.3);
+
+  // 14. Dupliquer un message vers le chat
+  const quoteMessage = (content: string) => {
+    setInput(`> ${content.slice(0, 200)}${content.length > 200 ? '...' : ''}\n\n`);
+  };
+
+  // 15. Changer la langue de l'interface vocale
+  const [voiceLang, setVoiceLang] = useState('fr-FR');
+  const voiceLangs = [
+    { code: 'fr-FR', label: '🇫🇷 Français' },
+    { code: 'en-US', label: '🇺🇸 English' },
+    { code: 'es-ES', label: '🇪🇸 Español' },
+    { code: 'de-DE', label: '🇩🇪 Deutsch' },
+  ];
+
   // Poll paiement
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -1138,112 +1326,61 @@ export default function App() {
     </motion.div>
   );
 
-  // ─── Image Studio Modal ────────────────────────────────────────────────
-  const generateStudioImage = async () => {
-    if (!studioPrompt.trim() || studioLoading) return;
+  // ─── Image Studio ─────────────────────────────────────────────────────────
+  const [studioPrompt, setStudioPrompt] = useState('');
+
+  const generateStudioImage = async (promptOverride?: string) => {
+    const promptToUse = promptOverride ?? studioPrompt;
+    if (!promptToUse.trim() || studioLoading) return;
     setStudioLoading(true);
+    setStudioProgress(0);
+    const promptSaved = promptToUse;
+    if (!promptOverride) setStudioPrompt('');
+
+    const progressInterval = setInterval(() => {
+      setStudioProgress(prev => prev < 85 ? prev + Math.random() * 8 : prev);
+    }, 800);
+
     try {
-      const encodedPrompt = encodeURIComponent(studioPrompt);
+      const encodedPrompt = encodeURIComponent(promptSaved);
       const seed = Math.floor(Math.random() * 999999);
       const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&enhance=true&seed=${seed}`;
-      await new Promise(resolve => setTimeout(resolve, 4000));
-      const newEntry = { url: imageUrl, prompt: studioPrompt, ts: Date.now() };
-      setGeneratedImages(prev => [newEntry, ...prev.slice(0, 19)]);
-      setStudioPrompt('');
-    } catch { setNotification("Erreur de génération."); }
-    finally { setStudioLoading(false); }
-  };
 
-  const ImageStudio = () => (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) setShowImageStudio(false); }}
-    >
-      <motion.div initial={{ scale: 0.92, y: 24 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.92, y: 24 }}
-        className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-3xl overflow-hidden"
-        style={{ background: 'linear-gradient(135deg, #0d0d1f 0%, #0a0a15 100%)', border: '1px solid rgba(99,102,241,0.2)' }}
-      >
-        <div className="flex items-center justify-between p-6 border-b border-white/5">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }}>
-              <ImagePlus className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h2 className="font-display font-bold text-lg">Studio d'Images IA</h2>
-              <p className="text-[10px] text-white/30 uppercase tracking-widest">Génération • Modèle FLUX</p>
-            </div>
-          </div>
-          <button onClick={() => setShowImageStudio(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
-            <X className="w-5 h-5 text-white/40" />
-          </button>
-        </div>
-        <div className="p-6 border-b border-white/5">
-          <div className="flex gap-3">
-            <textarea value={studioPrompt} onChange={e => setStudioPrompt(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateStudioImage(); } }}
-              placeholder="Décris l'image à créer... ex: un tigre blanc dans une forêt de bambous au coucher du soleil"
-              className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm resize-none focus:outline-none focus:border-indigo-500/60 transition-all placeholder:text-white/20 min-h-[60px]"
-              rows={2}
-            />
-            <button onClick={generateStudioImage} disabled={!studioPrompt.trim() || studioLoading}
-              className={cn("px-6 rounded-2xl font-bold text-sm flex items-center gap-2 transition-all shrink-0",
-                studioLoading ? "bg-white/5 text-white/20 cursor-not-allowed" : "text-white shadow-lg hover:scale-105"
-              )}
-              style={!studioLoading ? { background: 'linear-gradient(135deg, #6366f1, #a855f7)' } : {}}
-            >
-              {studioLoading ? <><div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" /><span>En cours...</span></> : <><Sparkles className="w-4 h-4" /><span>Générer</span></>}
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-2 mt-3">
-            {["Portrait cinématique", "Paysage fantastique", "Architecture futuriste", "Nature macro HD", "Art abstrait coloré"].map(p => (
-              <button key={p} onClick={() => setStudioPrompt(p)}
-                className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] text-white/50 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-300 transition-all">
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto p-6 scrollbar-hide">
-          {studioLoading && (
-            <div className="flex items-center justify-center py-12 gap-4">
-              <div className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
-              <span className="text-white/40 text-sm">Génération de l'image en cours...</span>
-            </div>
-          )}
-          {generatedImages.length === 0 && !studioLoading ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="w-16 h-16 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center mb-4">
-                <ImagePlus className="w-8 h-8 text-white/20" />
-              </div>
-              <p className="text-white/30 text-sm">Tes images générées apparaîtront ici</p>
-              <p className="text-white/15 text-xs mt-1">Jusqu'à 20 images sauvegardées automatiquement</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              {generatedImages.map((img, i) => (
-                <motion.div key={img.ts} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.05 }}
-                  className="relative group rounded-2xl overflow-hidden bg-white/5 border border-white/10 aspect-square cursor-pointer"
-                  onClick={() => setPreviewImage(img.url)}
-                >
-                  <img src={img.url} alt={img.prompt} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                    loading="lazy"
-                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-3">
-                    <p className="text-[10px] text-white/80 line-clamp-2">{img.prompt}</p>
-                    <div className="flex gap-2 mt-2">
-                      <button onClick={e => { e.stopPropagation(); setPreviewImage(img.url); }} className="flex-1 py-1 rounded-lg bg-white/20 text-[10px] text-white font-bold hover:bg-white/30 transition-all">Voir</button>
-                      <button onClick={e => { e.stopPropagation(); const a = document.createElement('a'); a.href = img.url; a.download = `djiogo-${img.ts}.jpg`; a.click(); }} className="px-3 py-1 rounded-lg bg-indigo-500/60 text-[10px] text-white font-bold hover:bg-indigo-500 transition-all">↓</button>
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-        </div>
-      </motion.div>
-    </motion.div>
-  );
+      let dataUrl = '';
+      let attempts = 0;
+      while (attempts < 10) {
+        attempts++;
+        try {
+          await new Promise(resolve => setTimeout(resolve, attempts === 1 ? 3000 : 2000));
+          const response = await fetch(imageUrl, { cache: 'no-store' });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const contentType = response.headers.get('content-type') || '';
+          if (!contentType.startsWith('image/')) throw new Error('Not image yet');
+          const blob = await response.blob();
+          if (blob.size < 5000) throw new Error('too small');
+          dataUrl = await new Promise<string>((res, rej) => {
+            const reader = new FileReader();
+            reader.onloadend = () => res(reader.result as string);
+            reader.onerror = rej;
+            reader.readAsDataURL(blob);
+          });
+          break;
+        } catch { if (attempts >= 10) throw new Error('failed'); }
+      }
+
+      if (!dataUrl) throw new Error('Impossible de générer');
+      setStudioProgress(100);
+      const newEntry = { dataUrl, prompt: promptSaved, ts: Date.now() };
+      setGeneratedImages(prev => [newEntry, ...prev.slice(0, 19)]);
+    } catch {
+      setNotification("❌ Génération échouée. Réessaie avec un prompt plus descriptif.");
+      if (!promptOverride) setStudioPrompt(promptSaved);
+    } finally {
+      clearInterval(progressInterval);
+      setStudioLoading(false);
+      setStudioProgress(0);
+    }
+  };
 
   return (
     <div className={cn(
@@ -1255,7 +1392,119 @@ export default function App() {
       fontSize === 'xs' ? "text-xs" : fontSize === 'sm' ? "text-sm" : fontSize === 'base' ? "text-base" : "text-lg"
     )}>
       <AnimatePresence>{showPricing && <PricingModal />}</AnimatePresence>
-      <AnimatePresence>{showImageStudio && <ImageStudio />}</AnimatePresence>
+
+      {/* Image Studio — outside App render tree via portal-like AnimatePresence */}
+      <AnimatePresence>
+        {showImageStudio && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowImageStudio(false); }}
+          >
+            <motion.div initial={{ scale: 0.92, y: 24 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.92, y: 24 }}
+              className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-3xl overflow-hidden"
+              style={{ background: 'linear-gradient(135deg, #0d0d1f 0%, #0a0a15 100%)', border: '1px solid rgba(99,102,241,0.2)' }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between p-6 border-b border-white/5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }}>
+                    <ImagePlus className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="font-display font-bold text-lg">Studio d'Images IA</h2>
+                    <p className="text-[10px] text-white/30 uppercase tracking-widest">Génération • Modèle FLUX</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowImageStudio(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-white/40" />
+                </button>
+              </div>
+              <div className="p-6 border-b border-white/5">
+                <div className="flex gap-3">
+                  <textarea
+                    value={studioPrompt}
+                    onChange={e => setStudioPrompt(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateStudioImage(); } }}
+                    placeholder="Décris l'image à créer... ex: un tigre blanc dans une forêt de bambous"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm resize-none focus:outline-none focus:border-indigo-500/60 transition-all placeholder:text-white/20 min-h-[60px]"
+                    rows={2}
+                  />
+                  <button onClick={() => generateStudioImage()} disabled={!studioPrompt.trim() || studioLoading}
+                    className={cn("px-6 rounded-2xl font-bold text-sm flex items-center gap-2 transition-all shrink-0",
+                      studioLoading ? "bg-white/5 text-white/20 cursor-not-allowed" : "text-white shadow-lg hover:scale-105"
+                    )}
+                    style={!studioLoading ? { background: 'linear-gradient(135deg, #6366f1, #a855f7)' } : {}}
+                  >
+                    {studioLoading
+                      ? <><div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" /><span>En cours...</span></>
+                      : <><Sparkles className="w-4 h-4" /><span>Générer</span></>}
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {["Portrait cinématique", "Paysage fantastique", "Architecture futuriste", "Nature macro HD", "Art abstrait coloré"].map(p => (
+                    <button key={p} onClick={() => setStudioPrompt(p)}
+                      className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] text-white/50 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-300 transition-all">
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-6 scrollbar-hide">
+                {studioLoading && (
+                  <div className="flex flex-col items-center justify-center py-12 gap-5">
+                    <div className="relative w-20 h-20">
+                      <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+                        className="absolute inset-0 rounded-full border-2 border-transparent border-t-indigo-500 border-r-purple-500" />
+                      <div className="absolute inset-3 rounded-full flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f120, #a855f720)' }}>
+                        <Sparkles className="w-5 h-5 text-indigo-400 animate-pulse" />
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-white/70 text-sm font-medium mb-3">Génération en cours...</p>
+                      <div className="w-64 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                        <motion.div className="h-full rounded-full" style={{ background: 'linear-gradient(90deg, #6366f1, #a855f7)' }}
+                          animate={{ width: `${studioProgress}%` }} transition={{ duration: 0.5 }} />
+                      </div>
+                      <p className="text-white/30 text-[10px] mt-2 uppercase tracking-widest">Modèle FLUX • {Math.round(studioProgress)}%</p>
+                    </div>
+                  </div>
+                )}
+                {generatedImages.length === 0 && !studioLoading ? (
+                  <div className="flex flex-col items-center justify-center py-20 text-center">
+                    <div className="w-16 h-16 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center mb-4">
+                      <ImagePlus className="w-8 h-8 text-white/20" />
+                    </div>
+                    <p className="text-white/30 text-sm">Tes images générées apparaîtront ici</p>
+                    <p className="text-white/15 text-xs mt-1">Jusqu'à 20 images sauvegardées automatiquement</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {generatedImages.map((img, i) => (
+                      <motion.div key={img.ts} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.05 }}
+                        className="relative group rounded-2xl overflow-hidden bg-white/5 border border-white/10 aspect-square cursor-pointer"
+                        onClick={() => setPreviewImage(img.dataUrl)}
+                      >
+                        <img src={img.dataUrl} alt={img.prompt} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex flex-col justify-end p-3">
+                          <p className="text-[10px] text-white/80 line-clamp-2">{img.prompt}</p>
+                          <div className="flex gap-2 mt-2">
+                            <button onClick={e => { e.stopPropagation(); setPreviewImage(img.dataUrl); }}
+                              className="flex-1 py-1 rounded-lg bg-white/20 text-[10px] text-white font-bold hover:bg-white/30 transition-all">Voir</button>
+                            <button onClick={e => { e.stopPropagation(); const a = document.createElement('a'); a.href = img.dataUrl; a.download = `djiogo-${img.ts}.jpg`; a.click(); }}
+                              className="px-3 py-1 rounded-lg bg-indigo-500/60 text-[10px] text-white font-bold hover:bg-indigo-500 transition-all">↓</button>
+                            <button onClick={e => { e.stopPropagation(); setGeneratedImages(prev => prev.filter(x => x.ts !== img.ts)); }}
+                              className="px-2 py-1 rounded-lg bg-rose-500/30 text-[10px] text-rose-300 font-bold hover:bg-rose-500/60 transition-all">✕</button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Mascot */}
       <motion.div drag dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }} className="fixed bottom-24 right-8 z-[100] cursor-grab active:cursor-grabbing">
@@ -1427,12 +1676,21 @@ export default function App() {
                   <button onClick={summarizeChat} className="w-full p-2 rounded-lg hover:bg-white/5 text-xs text-white/60 flex items-center gap-2 transition-colors">
                     <Zap className="w-3.5 h-3.5 text-amber-400" /> Résumer la discussion
                   </button>
-                  <div className="grid grid-cols-2 gap-1">
-                    <button onClick={exportPDF} className="p-2 rounded-lg hover:bg-white/5 text-[10px] text-white/60 flex items-center gap-2 transition-colors">
-                      <FileDown className="w-3 h-3" /> PDF Pro
+                  <button onClick={regenerateLastResponse} disabled={messages.length < 2} className="w-full p-2 rounded-lg hover:bg-white/5 text-xs text-white/60 flex items-center gap-2 transition-colors disabled:opacity-30">
+                    <RefreshCw className="w-3.5 h-3.5 text-emerald-400" /> Régénérer la réponse
+                  </button>
+                  <button onClick={() => setShowStats(true)} className="w-full p-2 rounded-lg hover:bg-white/5 text-xs text-white/60 flex items-center gap-2 transition-colors">
+                    <BarChart2 className="w-3.5 h-3.5 text-indigo-400" /> Statistiques de la session
+                  </button>
+                  <div className="grid grid-cols-3 gap-1 pt-1">
+                    <button onClick={exportPDF} className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-300 font-bold flex items-center gap-1 justify-center hover:bg-rose-500/20 transition-all">
+                      <FileDown className="w-3 h-3" /> PDF
                     </button>
-                    <button onClick={exportWord} className="p-2 rounded-lg hover:bg-white/5 text-[10px] text-white/60 flex items-center gap-2 transition-colors">
+                    <button onClick={exportWord} className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[10px] text-blue-300 font-bold flex items-center gap-1 justify-center hover:bg-blue-500/20 transition-all">
                       <FileText className="w-3 h-3" /> Word
+                    </button>
+                    <button onClick={exportTXT} className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-300 font-bold flex items-center gap-1 justify-center hover:bg-emerald-500/20 transition-all">
+                      <Hash className="w-3 h-3" /> TXT
                     </button>
                   </div>
                 </div>
@@ -1509,6 +1767,22 @@ export default function App() {
                         </select>
                       </div>
                     )}
+
+                    {/* Langue de reconnaissance vocale */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 px-2">
+                        <Globe className="w-3 h-3 text-indigo-400" />
+                        <span className="text-[8px] text-white/20 uppercase tracking-widest font-bold">Langue du micro</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1">
+                        {voiceLangs.map(l => (
+                          <button key={l.code} onClick={() => setVoiceLang(l.code)}
+                            className={cn("py-1.5 px-2 rounded-lg text-[9px] font-bold transition-all border", voiceLang === l.code ? "bg-indigo-500 border-indigo-500 text-white" : "bg-white/5 border-white/5 text-white/40 hover:bg-white/10")}>
+                            {l.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
                     <div className="space-y-4 pt-2">
                       <div className="space-y-2">
@@ -1612,12 +1886,18 @@ export default function App() {
               <ChevronRight className={cn("w-5 h-5 transition-transform", isSidebarOpen && "rotate-180")} />
             </button>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 md:gap-4">
             {lastLatency && (
               <div className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-mono text-white/40">
                 <Zap className="w-3 h-3 text-amber-400" />{lastLatency}ms
               </div>
             )}
+            <button onClick={() => setShowStats(true)} className="hidden md:flex p-2 hover:bg-white/5 rounded-lg transition-colors text-white/30 hover:text-white/70" title="Statistiques">
+              <BarChart2 className="w-4 h-4" />
+            </button>
+            <button onClick={toggleFullscreen} className="hidden md:flex p-2 hover:bg-white/5 rounded-lg transition-colors text-white/30 hover:text-white/70" title="Plein écran">
+              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">Groq Actif</span>
@@ -1692,7 +1972,38 @@ export default function App() {
                       </div>
                     )}
 
-                    <div className="flex items-center gap-3 mt-3 pt-3 border-t border-white/5">
+                    {/* Quick action row — visible on hover for all messages */}
+                    <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-white/5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                      <button onClick={() => toggleLike(message.id)} title="J'aime"
+                        className={cn("p-1 rounded-md transition-all text-[10px]", likedMessages.includes(message.id) ? "text-rose-400" : "text-white/20 hover:text-rose-300")}>
+                        <Heart className={cn("w-3 h-3", likedMessages.includes(message.id) && "fill-current")} />
+                      </button>
+                      <button onClick={() => togglePin(message.id)} title="Épingler"
+                        className={cn("p-1 rounded-md transition-all", pinnedMessages.includes(message.id) ? "text-amber-400" : "text-white/20 hover:text-amber-300")}>
+                        <Bookmark className={cn("w-3 h-3", pinnedMessages.includes(message.id) && "fill-current")} />
+                      </button>
+                      <button onClick={() => quoteMessage(message.content)} title="Citer"
+                        className="p-1 rounded-md text-white/20 hover:text-white/60 transition-all">
+                        <Quote className="w-3 h-3" />
+                      </button>
+                      {message.role === 'assistant' && (
+                        <>
+                          <button onClick={() => summarizeMessage(message.content)} title="Résumer"
+                            className="p-1 rounded-md text-white/20 hover:text-indigo-300 transition-all text-[10px] font-bold">∑</button>
+                          <button onClick={() => continueMessage(message.content)} title="Continuer"
+                            className="p-1 rounded-md text-white/20 hover:text-emerald-300 transition-all">
+                            <ChevronRight className="w-3 h-3" />
+                          </button>
+                          <button onClick={() => translateMessage(message.content, 'anglais')} title="Traduire EN"
+                            className="p-1 rounded-md text-white/20 hover:text-cyan-300 transition-all text-[8px] font-bold">EN</button>
+                        </>
+                      )}
+                      <span className="ml-auto text-[8px] text-white/15 font-mono">
+                        ~{estimateTokens(message.content)} tok
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3 mt-2 pt-2 border-t border-white/5">
                       {message.sentiment && (
                         <div className={cn("flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium uppercase tracking-wider", message.sentiment === 'positive' ? "bg-emerald-500/10 text-emerald-400" : message.sentiment === 'negative' ? "bg-rose-500/10 text-rose-400" : "bg-white/5 text-white/40")}>
                           {message.sentiment === 'positive' ? <Smile className="w-3 h-3" /> : message.sentiment === 'negative' ? <X className="w-3 h-3" /> : <Activity className="w-3 h-3" />}
@@ -1716,28 +2027,35 @@ export default function App() {
                     )}
 
                     {message.role === 'assistant' && (
-                      <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
-                        <div className="flex flex-col gap-3 w-full">
-                          <div className="flex items-center justify-between">
-                            <div className="flex gap-2">
-                              <button onClick={() => speakMessage(message.content, message.id)} className="p-1.5 hover:bg-white/5 rounded-md transition-colors text-white/40 hover:text-white" title="Lire à voix haute">
-                                <Volume2 className={cn("w-3.5 h-3.5", isSpeaking === message.id && "text-indigo-400 animate-pulse")} />
-                              </button>
-                              <button onClick={() => navigator.clipboard.writeText(message.content)} className="p-1.5 hover:bg-white/5 rounded-md transition-colors text-white/40 hover:text-white" title="Copier">
-                                <Copy className="w-3.5 h-3.5" />
-                              </button>
-                              <button onClick={() => exportSinglePDF(message)} className="p-1.5 hover:bg-white/5 rounded-md transition-colors text-white/40 hover:text-white" title="Exporter en PDF">
-                                <FileDown className="w-3.5 h-3.5" />
-                              </button>
-                              <button onClick={() => exportSingleWord(message)} className="p-1.5 hover:bg-white/5 rounded-md transition-colors text-white/40 hover:text-white" title="Exporter en Word">
-                                <FileText className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                            <div className="text-[8px] text-white/20 font-bold uppercase tracking-widest">
-                              <Clock className="w-2 h-2 inline mr-1" />
-                              ~{Math.ceil(message.content.split(' ').length / 200)} min lecture
-                            </div>
+                      <div className="mt-3 pt-3 border-t border-white/5">
+                        {/* Row 1: icon actions */}
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex gap-1">
+                            <button onClick={() => speakMessage(message.content, message.id)}
+                              className={cn("p-1.5 rounded-lg transition-all", isSpeaking === message.id ? "bg-indigo-500/20 text-indigo-400" : "hover:bg-white/5 text-white/30 hover:text-white/70")}
+                              title="Lire à voix haute">
+                              <Volume2 className={cn("w-3.5 h-3.5", isSpeaking === message.id && "animate-pulse")} />
+                            </button>
+                            <button onClick={() => { navigator.clipboard.writeText(message.content); setNotification("✅ Copié !"); }}
+                              className="p-1.5 rounded-lg hover:bg-white/5 text-white/30 hover:text-white/70 transition-all" title="Copier">
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
                           </div>
+                          <div className="text-[8px] text-white/20 font-mono">
+                            <Clock className="w-2 h-2 inline mr-1" />
+                            ~{Math.ceil(message.content.split(' ').length / 200)}min
+                          </div>
+                        </div>
+                        {/* Row 2: Export buttons — clear & visible */}
+                        <div className="flex gap-2">
+                          <button onClick={() => exportSinglePDF(message)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all hover:scale-105 active:scale-95 border border-rose-500/30 text-rose-300 bg-rose-500/10 hover:bg-rose-500/20">
+                            <FileDown className="w-3 h-3" /> PDF
+                          </button>
+                          <button onClick={() => exportSingleWord(message)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all hover:scale-105 active:scale-95 border border-blue-500/30 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20">
+                            <FileText className="w-3 h-3" /> Word
+                          </button>
                         </div>
                       </div>
                     )}
@@ -1801,16 +2119,7 @@ export default function App() {
                     )}
                   </AnimatePresence>
 
-                  {/* Countdown */}
-                  <AnimatePresence>
-                    {voiceCountdown !== null && (
-                      <motion.div initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }}
-                        className="absolute top-1/2 right-12 -translate-y-1/2 w-14 h-14 rounded-full bg-amber-500/20 border-2 border-amber-500/50 flex items-center justify-center"
-                      >
-                        <span className="text-2xl font-black text-amber-400">{voiceCountdown}</span>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                  {/* Countdown removed */}
 
                   <div className="flex flex-col items-center gap-8 relative z-10">
                     <VoiceOrb isListening={isListening} isSpeaking={!!isSpeaking} accentColor={accentColor} />
@@ -1818,7 +2127,7 @@ export default function App() {
                     <div className="flex flex-col items-center gap-3 text-center">
                       <motion.div key={isListening ? 'l' : isSpeaking ? 's' : 'i'} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
                         <span className={cn("text-2xl font-light tracking-tight", isListening ? "text-red-300" : isSpeaking ? "text-indigo-300" : "text-white/60")}>
-                          {isListening ? (voiceCountdown !== null ? `Envoi dans ${voiceCountdown}s...` : "Je vous écoute...") : isSpeaking ? "Djiogo.ai répond..." : "Appuyez sur le micro"}
+                          {isListening ? "Je vous écoute..." : isSpeaking ? "Djiogo.ai répond..." : "Appuyez sur le micro"}
                         </span>
                         <motion.div animate={{ opacity: [0.3, 0.8, 0.3] }} transition={{ duration: 2, repeat: Infinity }}
                           className="text-[11px] font-bold uppercase tracking-[0.3em] text-white/30 mt-1"
@@ -1957,9 +2266,87 @@ export default function App() {
             <button onClick={() => setPreviewImage(null)} className="absolute top-6 right-6 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors">
               <X className="w-6 h-6" />
             </button>
+            {previewImage && (
+              <a href={previewImage} download={`djiogo-${Date.now()}.jpg`} onClick={e => e.stopPropagation()}
+                className="absolute bottom-6 right-6 flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-500 transition-all">
+                <Download className="w-4 h-4" /> Télécharger
+              </a>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Stats Modal */}
+      <AnimatePresence>
+        {showStats && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-xl p-4"
+            onClick={() => setShowStats(false)}
+          >
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9 }}
+              className="w-full max-w-sm rounded-3xl p-8 border border-white/10"
+              style={{ background: 'linear-gradient(135deg, #0d0d1f, #0a0a15)' }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="font-display font-bold text-xl">Statistiques</h3>
+                <button onClick={() => setShowStats(false)} className="p-2 hover:bg-white/5 rounded-xl"><X className="w-4 h-4 text-white/40" /></button>
+              </div>
+              {(() => { const s = getChatStats(); return (
+                <div className="grid grid-cols-2 gap-4">
+                  {[
+                    { label: 'Total messages', val: s.total, color: '#6366f1' },
+                    { label: 'Vos messages', val: s.userMsgs, color: '#22d3ee' },
+                    { label: 'Réponses IA', val: s.aiMsgs, color: '#a855f7' },
+                    { label: 'Mots échangés', val: s.totalWords, color: '#f59e0b' },
+                    { label: 'Images envoyées', val: s.images, color: '#f43f5e' },
+                    { label: 'Épinglés', val: pinnedMessages.length, color: '#10b981' },
+                  ].map(item => (
+                    <div key={item.label} className="p-4 rounded-2xl border border-white/5" style={{ background: item.color + '11' }}>
+                      <div className="text-2xl font-display font-black" style={{ color: item.color }}>{item.val}</div>
+                      <div className="text-[10px] text-white/40 mt-1">{item.label}</div>
+                    </div>
+                  ))}
+                </div>
+              ); })()}
+              <div className="mt-6 flex gap-3">
+                <button onClick={() => { exportTXT(); setShowStats(false); }}
+                  className="flex-1 py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-white/60 hover:bg-white/10 transition-all flex items-center justify-center gap-2">
+                  <FileText className="w-3.5 h-3.5" /> Export TXT
+                </button>
+                <button onClick={() => { shareChat(); setShowStats(false); }}
+                  className="flex-1 py-2.5 rounded-xl bg-indigo-500/20 border border-indigo-500/30 text-xs font-bold text-indigo-300 hover:bg-indigo-500/30 transition-all flex items-center justify-center gap-2">
+                  <Share2 className="w-3.5 h-3.5" /> Partager
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating toolbar — bottom center on mobile */}
+      <motion.div
+        initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 1, type: 'spring' }}
+        className="fixed bottom-28 right-4 z-[90] flex flex-col gap-2 md:hidden"
+      >
+        <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
+          onClick={toggleFullscreen}
+          className="w-10 h-10 rounded-full bg-white/5 border border-white/10 backdrop-blur-xl flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all shadow-lg">
+          {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+        </motion.button>
+        <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
+          onClick={() => setShowStats(true)}
+          className="w-10 h-10 rounded-full bg-white/5 border border-white/10 backdrop-blur-xl flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all shadow-lg">
+          <BarChart2 className="w-4 h-4" />
+        </motion.button>
+        {messages.length > 2 && (
+          <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
+            onClick={regenerateLastResponse}
+            className="w-10 h-10 rounded-full bg-white/5 border border-white/10 backdrop-blur-xl flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all shadow-lg">
+            <RefreshCw className="w-4 h-4" />
+          </motion.button>
+        )}
+      </motion.div>
     </div>
   );
 }
