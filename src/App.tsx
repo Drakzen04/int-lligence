@@ -1312,6 +1312,13 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
     setLikedMessages(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
+  // Mini-player flottant
+  const openMiniPlayer = (content: string) => {
+    setMiniPlayerMsg(content);
+    setShowMiniPlayer(true);
+    speakMessage(content, 'mini');
+  };
+
   // 3. Traduction rapide d'un message
   const translateMessage = (content: string, targetLang: string) => {
     handleSend(`Traduis ce texte en ${targetLang} :\n\n${content}`);
@@ -1391,6 +1398,8 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
 
   // 15. Changer la langue de l'interface vocale
   const [voiceLang, setVoiceLang] = useState('fr-FR');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const voiceLangs = [
     { code: 'fr-FR', label: '🇫🇷 Français' },
     { code: 'en-US', label: '🇺🇸 English' },
@@ -1686,46 +1695,6 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
     setHasShownShare2(true);
     setShowShareAfter2(false);
     setNotification("🎉 Merci pour le partage !");
-  };
-
-  // ── Fonctionnalité 1 : Like/Unlike messages ──────────────────────────────
-  const toggleLike = (id: string) => {
-    setLikedMessages(prev => {
-      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
-      localStorage.setItem('djiogo_likes', JSON.stringify(next));
-      return next;
-    });
-  };
-  // ── Fonctionnalité 2 : Épingler messages ─────────────────────────────────
-  const togglePin = (id: string) => {
-    setPinnedMessages(prev => {
-      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
-      localStorage.setItem('djiogo_pins', JSON.stringify(next));
-      return next;
-    });
-  };
-  // ── Fonctionnalité 3 : Citation dans input ───────────────────────────────
-  const quoteMessage = (content: string) => {
-    const quoted = content.slice(0, 120).replace(/
-/g, ' ');
-    setQuotedText(quoted);
-    setInput(`> ${quoted}
-
-`);
-  };
-  // ── Fonctionnalité 4 : Mini-player flottant ─────────────────────────────
-  const openMiniPlayer = (content: string) => {
-    setMiniPlayerMsg(content);
-    setShowMiniPlayer(true);
-    speakMessage(content, 'mini');
-  };
-  // ── Fonctionnalité 5 : Résumer un message ───────────────────────────────
-  const summarizeMessage = (content: string) => {
-    handleSend(`Résume ce texte en 2-3 phrases max : "${content.slice(0, 500)}"`);
-  };
-  // ── Fonctionnalité 6 : Continuer un message ──────────────────────────────
-  const continueMessage = (content: string) => {
-    handleSend(`Continue et développe ce point : "${content.slice(-200)}"`);
   };
 
   // ─── Bannière sidebar : apparaît 30s après ouverture ─────────────────────
