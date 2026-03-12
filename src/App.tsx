@@ -3,22 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Groq from 'groq-sdk';
 import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from "motion/react";
 import { jsPDF } from "jspdf";
-import html2canvas from "html2canvas";
 import { 
-  Send, Bot, User, Sparkles, Trash2, Plus, MessageSquare, ChevronRight,
+  Send, Bot, User, Sparkles, Plus, MessageSquare, ChevronRight,
   Github, Twitter, Cpu, Image as ImageIcon, Volume2, Download, Mic,
-  ImagePlus, Languages, Zap, History, Lightbulb, FileText, Search as SearchIcon,
+  ImagePlus, Languages, Zap, History, FileText, Search as SearchIcon,
   Clock, BrainCircuit, Quote, Save, FileDown, Activity, Smile, Settings,
   FolderOpen, ShieldCheck, Wand2, X, Check, Palette, Copy, Square, Type,
-  Play, RotateCcw, Terminal, Star, Heart, Bookmark, Share2, ThumbsUp,
-  ThumbsDown, Globe, Moon, Sun, Headphones, Music, Camera, Maximize2,
-  Minimize2, RefreshCw, AlertCircle, Info, Eye, EyeOff, Lock, Unlock,
-  TrendingUp, BarChart2, PieChart, ChevronDown, ChevronUp, Filter,
-  Code2, Braces, Hash
+  Play, Heart, Bookmark, Share2, Maximize2, Minimize2, RefreshCw,
+  BarChart2, Eye, Code2, Terminal, Globe, Lightbulb, BookOpen, Layers
 } from "lucide-react";
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -539,10 +535,7 @@ export default function App() {
   });
   const [studioLoading, setStudioLoading] = useState(false);
   const [studioProgress, setStudioProgress] = useState(0);
-  const [pinnedMessages, setPinnedMessages] = useState<string[]>([]);
-  const [likedMessages, setLikedMessages] = useState<string[]>([]);
   const [showStats, setShowStats] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // ─── NEW FEATURES STATE ──────────────────────────────────────────────────
   // Tutorial
@@ -581,6 +574,20 @@ export default function App() {
   const [smartReplies, setSmartReplies] = useState<string[]>([]);
   // Code preview modal
   const [codePreview, setCodePreview] = useState<{code: string; lang: string} | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  // ── 6 nouvelles fonctionnalités compétitives ─────────────────────────────
+  const [showPromptLib, setShowPromptLib] = useState(false);           // Bibliothèque de prompts
+  const [showComparator, setShowComparator] = useState(false);         // Comparateur de réponses
+  const [comparatorMsgA, setComparatorMsgA] = useState<string>('');
+  const [comparatorMsgB, setComparatorMsgB] = useState<string>('');
+  const [showNotepad, setShowNotepad] = useState(false);               // Bloc-notes intégré
+  const [notepadText, setNotepadText] = useState(() => localStorage.getItem('djiogo_notepad') || '');
+  const [showDictation, setShowDictation] = useState(false);           // Mode dictée continue
+  const [showWebSearch, setShowWebSearch] = useState(false);           // Recherche web simulée
+  const [webSearchQuery, setWebSearchQuery] = useState('');
+  const [messageReactions, setMessageReactions] = useState<Record<string, string>>(() =>
+    JSON.parse(localStorage.getItem('djiogo_reactions') || '{}'));     // Réactions emoji
   // ─────────────────────────────────────────────────────────────────────────
 
   // ─── Groq Client ──────────────────────────────────────────────────────────
@@ -1385,9 +1392,6 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
     }
   };
 
-  // 12. Mode focus (cache la sidebar)
-  const [focusMode, setFocusMode] = useState(false);
-
   // 13. Compteur de tokens estimé
   const estimateTokens = (text: string) => Math.ceil(text.split(/\s+/).length * 1.3);
 
@@ -1398,14 +1402,103 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
 
   // 15. Changer la langue de l'interface vocale
   const [voiceLang, setVoiceLang] = useState('fr-FR');
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [focusMode, setFocusMode] = useState(false);
   const voiceLangs = [
     { code: 'fr-FR', label: '🇫🇷 Français' },
     { code: 'en-US', label: '🇺🇸 English' },
     { code: 'es-ES', label: '🇪🇸 Español' },
     { code: 'de-DE', label: '🇩🇪 Deutsch' },
   ];
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ██ 6 NOUVELLES FONCTIONNALITÉS COMPÉTITIVES ██████████████████████████████
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ① BIBLIOTHÈQUE DE PROMPTS — prompts prêts à l'emploi par catégorie
+  const PROMPT_LIBRARY = [
+    { cat: '💼 Pro', items: ['Rédige un email professionnel pour...', 'Prépare un plan de présentation sur...', 'Analyse les forces et faiblesses de...', 'Écris une proposition commerciale pour...'] },
+    { cat: '💻 Code', items: ['Optimise ce code :', 'Explique ce bug et corrige-le :', 'Génère des tests unitaires pour :', 'Convertis ce code en TypeScript :'] },
+    { cat: '📚 Étude', items: ['Explique-moi simplement le concept de...', 'Crée un quiz sur le sujet...', 'Résume ce cours en fiches mémo :', 'Donne-moi 5 exemples concrets de...'] },
+    { cat: '🎨 Créatif', items: ['Écris une histoire courte sur...', 'Génère 10 idées créatives pour...', 'Améliore ce texte en le rendant plus vivant :', 'Écris un slogan percutant pour...'] },
+    { cat: '🔍 Analyse', items: ['Compare et contraste :', 'Quels sont les avantages et inconvénients de...', 'Donne-moi une analyse SWOT de...', 'Identifie les tendances dans :'] },
+  ];
+
+  const applyPrompt = (prompt: string) => {
+    setInput(prompt);
+    setShowPromptLib(false);
+  };
+
+  // ② COMPARATEUR DE RÉPONSES — régénère et compare 2 versions
+  const compareResponses = async (userMsg: string) => {
+    setShowComparator(true);
+    setComparatorMsgA('⏳ Génération A en cours...');
+    setComparatorMsgB('⏳ Génération B en cours...');
+    const groq = new (await import('groq-sdk')).default({ apiKey: import.meta.env.VITE_GROQ_API_KEY, dangerouslyAllowBrowser: true });
+    const base = [{ role: 'system' as const, content: 'Réponds de façon concise et précise.' }, { role: 'user' as const, content: userMsg }];
+    try {
+      const [resA, resB] = await Promise.all([
+        groq.chat.completions.create({ model: 'llama-3.3-70b-versatile', messages: base, temperature: 0.3, max_tokens: 512 }),
+        groq.chat.completions.create({ model: 'llama-3.3-70b-versatile', messages: base, temperature: 0.9, max_tokens: 512 }),
+      ]);
+      setComparatorMsgA(resA.choices[0]?.message?.content || '');
+      setComparatorMsgB(resB.choices[0]?.message?.content || '');
+    } catch { setComparatorMsgA('Erreur'); setComparatorMsgB('Erreur'); }
+  };
+
+  const pickComparatorAnswer = (msg: string) => {
+    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: msg, timestamp: Date.now() }]);
+    setShowComparator(false);
+  };
+
+  // ③ BLOC-NOTES INTÉGRÉ — notes persistantes liées à la session
+  const saveNotepad = (text: string) => {
+    setNotepadText(text);
+    localStorage.setItem('djiogo_notepad', text);
+  };
+
+  const sendNoteToChat = () => {
+    if (notepadText.trim()) handleSend('Voici mes notes : ' + notepadText);
+  };
+
+  // ④ RÉACTIONS EMOJI sur les messages
+  const EMOJI_REACTIONS = ['👍', '❤️', '😂', '😮', '🔥', '💡', '✅', '❌'];
+  const reactToMessage = (msgId: string, emoji: string) => {
+    const updated = { ...messageReactions };
+    if (updated[msgId] === emoji) delete updated[msgId];
+    else updated[msgId] = emoji;
+    setMessageReactions(updated);
+    localStorage.setItem('djiogo_reactions', JSON.stringify(updated));
+  };
+
+  // ⑤ RECHERCHE WEB SIMULÉE — enrichit le prompt avec contexte de recherche
+  const triggerWebSearch = () => {
+    if (!webSearchQuery.trim()) return;
+    handleSend(\`Réponds à cette question en utilisant tes connaissances comme si tu avais fait une recherche web approfondie en \${new Date().getFullYear()}. Donne des informations récentes et factuelles : \${webSearchQuery}\`);
+    setWebSearchQuery('');
+    setShowWebSearch(false);
+  };
+
+  // ⑥ MODE DICTÉE CONTINUE — transcription longue durée
+  let dictationRecognition: any = null;
+  const startDictation = () => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { setNotification('Votre navigateur ne supporte pas la dictée.'); return; }
+    dictationRecognition = new SR();
+    dictationRecognition.lang = voiceLang;
+    dictationRecognition.continuous = true;
+    dictationRecognition.interimResults = true;
+    dictationRecognition.onresult = (e: any) => {
+      const transcript = Array.from(e.results).map((r: any) => r[0].transcript).join('');
+      setInput(transcript);
+    };
+    dictationRecognition.onend = () => setShowDictation(false);
+    dictationRecognition.start();
+    setShowDictation(true);
+  };
+
+  const stopDictation = () => {
+    dictationRecognition?.stop();
+    setShowDictation(false);
+  };
 
   // Poll paiement
   useEffect(() => {
@@ -2036,6 +2129,172 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
       <AdModal />
       <RewardedAdModal />
       <AdToast />
+
+      {/* ① BIBLIOTHÈQUE DE PROMPTS ══════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showPromptLib && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[490] flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(16px)' }}
+            onClick={() => setShowPromptLib(false)}>
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9 }}
+              onClick={e => e.stopPropagation()}
+              className="w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-3xl"
+              style={{ background: 'linear-gradient(135deg,#0c0c18,#12101f)', border: '1px solid rgba(99,102,241,0.3)' }}>
+              <div className="sticky top-0 flex items-center justify-between px-6 py-4 border-b border-white/5"
+                style={{ background: 'rgba(12,12,24,0.95)', backdropFilter: 'blur(20px)' }}>
+                <div className="flex items-center gap-3">
+                  <BookOpen className="w-5 h-5 text-indigo-400" />
+                  <h2 className="text-lg font-display font-bold">Bibliothèque de Prompts</h2>
+                </div>
+                <button onClick={() => setShowPromptLib(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors"><X className="w-4 h-4 text-white/50" /></button>
+              </div>
+              <div className="p-5 space-y-6">
+                {PROMPT_LIBRARY.map((cat, ci) => (
+                  <div key={ci}>
+                    <div className="text-xs font-bold text-white/40 uppercase tracking-widest mb-3">{cat.cat}</div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {cat.items.map((item, ii) => (
+                        <button key={ii} onClick={() => applyPrompt(item)}
+                          className="text-left px-4 py-3 rounded-2xl bg-white/5 hover:bg-indigo-500/20 border border-white/5 hover:border-indigo-500/30 text-sm text-white/70 hover:text-white transition-all flex items-center gap-3 group">
+                          <Lightbulb className="w-3.5 h-3.5 text-indigo-400 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          {item}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ② COMPARATEUR DE RÉPONSES ══════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showComparator && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[490] flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(16px)' }}>
+            <motion.div initial={{ scale: 0.92, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.92 }}
+              className="w-full max-w-4xl rounded-3xl overflow-hidden"
+              style={{ background: 'linear-gradient(135deg,#0c0c18,#12101f)', border: '1px solid rgba(168,85,247,0.3)' }}>
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+                <div className="flex items-center gap-3">
+                  <Layers className="w-5 h-5 text-purple-400" />
+                  <h2 className="text-lg font-display font-bold">Comparateur de Réponses</h2>
+                  <span className="text-[10px] text-white/30 font-bold uppercase tracking-widest">Précision vs Créativité</span>
+                </div>
+                <button onClick={() => setShowComparator(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors"><X className="w-4 h-4 text-white/50" /></button>
+              </div>
+              <div className="grid grid-cols-2 gap-0">
+                {[{ label: 'Version A', color: '#6366f1', sub: 'Précise & Factuelle', msg: comparatorMsgA },
+                  { label: 'Version B', color: '#a855f7', sub: 'Créative & Originale', msg: comparatorMsgB }].map((v, i) => (
+                  <div key={i} className={cn("p-5", i === 0 && "border-r border-white/5")}>
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="text-sm font-bold" style={{ color: v.color }}>{v.label}</div>
+                        <div className="text-[10px] text-white/30">{v.sub}</div>
+                      </div>
+                      <button onClick={() => pickComparatorAnswer(v.msg)}
+                        className="px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all hover:scale-105"
+                        style={{ background: v.color + '20', color: v.color, border: '1px solid ' + v.color + '40' }}>
+                        Utiliser cette réponse →
+                      </button>
+                    </div>
+                    <div className="text-xs text-white/60 leading-relaxed max-h-64 overflow-y-auto"
+                      style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '12px', padding: '12px' }}>
+                      {v.msg || '⏳ En cours...'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ③ BLOC-NOTES INTÉGRÉ ════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showNotepad && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[490] flex items-end md:items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(12px)' }}>
+            <motion.div initial={{ y: 60, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 60, opacity: 0 }}
+              className="w-full max-w-lg rounded-3xl overflow-hidden"
+              style={{ background: 'linear-gradient(135deg,#0c0c18,#12101f)', border: '1px solid rgba(52,211,153,0.3)' }}>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-emerald-400" />
+                  <span className="text-sm font-bold text-white/80">Bloc-notes</span>
+                  <span className="text-[10px] text-white/30">{notepadText.length} chars</span>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={sendNoteToChat} className="px-3 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 text-[11px] font-bold border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors">
+                    Envoyer à Djiogo.ai →
+                  </button>
+                  <button onClick={() => setShowNotepad(false)} className="p-1.5 hover:bg-white/5 rounded-lg transition-colors"><X className="w-4 h-4 text-white/40" /></button>
+                </div>
+              </div>
+              <textarea value={notepadText} onChange={e => saveNotepad(e.target.value)}
+                placeholder="Prends tes notes ici... elles sont sauvegardées automatiquement."
+                className="w-full bg-transparent px-5 py-4 text-sm text-white/70 resize-none focus:outline-none placeholder:text-white/15"
+                style={{ minHeight: '200px' }} />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ④ RÉACTIONS EMOJI — rendered inline in messages, state tracked here */}
+
+      {/* ⑤ RECHERCHE WEB SIMULÉE ════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showWebSearch && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[490] flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(16px)' }}
+            onClick={() => setShowWebSearch(false)}>
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9 }}
+              onClick={e => e.stopPropagation()}
+              className="w-full max-w-lg rounded-3xl overflow-hidden"
+              style={{ background: 'linear-gradient(135deg,#0c0c18,#12101f)', border: '1px solid rgba(14,165,233,0.4)' }}>
+              <div className="px-6 py-5">
+                <div className="flex items-center gap-3 mb-4">
+                  <Globe className="w-5 h-5 text-sky-400" />
+                  <h2 className="text-lg font-display font-bold">Recherche Web IA</h2>
+                </div>
+                <div className="flex gap-2">
+                  <input value={webSearchQuery} onChange={e => setWebSearchQuery(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && triggerWebSearch()}
+                    placeholder="Ex: actualités IA 2025, meilleur smartphone..."
+                    className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-sky-500/50 transition-all placeholder:text-white/20" />
+                  <button onClick={triggerWebSearch}
+                    className="px-4 py-2 rounded-2xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-bold transition-colors">
+                    <SearchIcon className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="text-[10px] text-white/20 mt-3 text-center">Djiogo.ai utilise ses connaissances pour simuler une recherche récente</p>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ⑥ MODE DICTÉE CONTINUE ══════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showDictation && (
+          <motion.div initial={{ opacity: 0, y: 80 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 80 }}
+            className="fixed bottom-28 left-1/2 -translate-x-1/2 z-[400] flex items-center gap-4 px-6 py-4 rounded-3xl shadow-2xl"
+            style={{ background: 'rgba(10,10,20,0.95)', border: '1px solid rgba(239,68,68,0.4)' }}>
+            <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-sm font-bold text-white/80">Dictée en cours...</span>
+            <span className="text-xs text-white/40 max-w-40 truncate">{input || 'Parlez maintenant...'}</span>
+            <button onClick={stopDictation} className="px-3 py-1.5 rounded-xl bg-red-500/20 text-red-400 text-xs font-bold border border-red-500/30 hover:bg-red-500/30 transition-colors">
+              Arrêter
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ═══ MINI PLAYER FLOTTANT (Fonctionnalité 4) ═══════════════════════ */}
       <AnimatePresence>
@@ -2881,11 +3140,32 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
                           </button>
                           <button onClick={() => translateMessage(message.content, 'anglais')} title="Traduire EN"
                             className="p-1 rounded-md text-white/20 hover:text-cyan-300 transition-all text-[8px] font-bold">EN</button>
+                          <button onClick={() => compareResponses(message.content)} title="Comparer 2 versions"
+                            className="p-1 rounded-md text-white/20 hover:text-purple-300 transition-all">
+                            <Layers className="w-3 h-3" />
+                          </button>
                         </>
                       )}
-                      <span className="ml-auto text-[8px] text-white/15 font-mono">
-                        ~{estimateTokens(message.content)} tok
-                      </span>
+                      {/* Réactions emoji */}
+                      <div className="ml-auto flex items-center gap-0.5">
+                        {messageReactions[message.id] ? (
+                          <button onClick={() => reactToMessage(message.id, messageReactions[message.id])}
+                            className="text-sm hover:scale-110 transition-transform"
+                            title="Retirer la réaction">
+                            {messageReactions[message.id]}
+                          </button>
+                        ) : (
+                          <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {EMOJI_REACTIONS.slice(0,4).map(emoji => (
+                              <button key={emoji} onClick={() => reactToMessage(message.id, emoji)}
+                                className="text-xs hover:scale-125 transition-transform p-0.5">{emoji}</button>
+                            ))}
+                          </div>
+                        )}
+                        <span className="text-[8px] text-white/15 font-mono ml-1">
+                          ~{estimateTokens(message.content)} tok
+                        </span>
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-3 mt-2 pt-2 border-t border-white/5">
@@ -3091,6 +3371,26 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
                 >
                   <ImagePlus className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Images</span>
+                </button>
+                {/* ① Bibliothèque prompts */}
+                <button onClick={() => setShowPromptLib(true)} title="Bibliothèque de prompts"
+                  className="p-2 rounded-xl hover:bg-indigo-500/20 text-white/20 hover:text-indigo-300 transition-colors">
+                  <BookOpen className="w-4 h-4" />
+                </button>
+                {/* ③ Bloc-notes */}
+                <button onClick={() => setShowNotepad(true)} title="Bloc-notes"
+                  className="p-2 rounded-xl hover:bg-emerald-500/20 text-white/20 hover:text-emerald-300 transition-colors">
+                  <FileText className="w-4 h-4" />
+                </button>
+                {/* ⑤ Recherche web */}
+                <button onClick={() => setShowWebSearch(true)} title="Recherche Web IA"
+                  className="p-2 rounded-xl hover:bg-sky-500/20 text-white/20 hover:text-sky-300 transition-colors">
+                  <Globe className="w-4 h-4" />
+                </button>
+                {/* ⑥ Dictée continue */}
+                <button onClick={showDictation ? stopDictation : startDictation} title="Mode Dictée Continue"
+                  className={cn("p-2 rounded-xl transition-colors", showDictation ? "bg-red-500/20 text-red-400 animate-pulse" : "hover:bg-red-500/10 text-white/20 hover:text-red-300")}>
+                  <Terminal className="w-4 h-4" />
                 </button>
               </div>
 
