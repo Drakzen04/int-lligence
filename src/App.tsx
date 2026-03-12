@@ -564,8 +564,21 @@ export default function App() {
   const [showSidebarAd, setShowSidebarAd] = useState(false);      // bannière sidebar
   const [showRewardedAd, setShowRewardedAd] = useState(false);    // pub récompensée
   const [rewardedCountdown, setRewardedCountdown] = useState(5);  // compte à rebours pub
-  const [pendingReward, setPendingReward] = useState<null|string>(null); // récompense en attente
+  const [pendingReward, setPendingReward] = useState<null|string>(null);
   const adContainerRef = useRef<HTMLDivElement>(null);
+  const [showWelcomeAd, setShowWelcomeAd] = useState(false);       // pub centré à l'ouverture
+  const [showShareAfter2, setShowShareAfter2] = useState(false);   // partage après 2 messages
+  const [hasShownShare2, setHasShownShare2] = useState(() => localStorage.getItem('djiogo_share2') === 'true');
+  // ── 6 nouvelles fonctionnalités ──────────────────────────────────────────
+  const [likedMessages, setLikedMessages] = useState<string[]>(() => JSON.parse(localStorage.getItem('djiogo_likes') || '[]'));
+  const [pinnedMessages, setPinnedMessages] = useState<string[]>(() => JSON.parse(localStorage.getItem('djiogo_pins') || '[]'));
+  const [quotedText, setQuotedText] = useState<string | null>(null);
+  const [showReadingMode, setShowReadingMode] = useState(false);
+  const [showMiniPlayer, setShowMiniPlayer] = useState(false);
+  const [miniPlayerMsg, setMiniPlayerMsg] = useState<string | null>(null);
+  const [wordCount, setWordCount] = useState(0);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [smartReplies, setSmartReplies] = useState<string[]>([]);
   // Code preview modal
   const [codePreview, setCodePreview] = useState<{code: string; lang: string} | null>(null);
   // ─────────────────────────────────────────────────────────────────────────
@@ -1654,6 +1667,67 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
 
   // ─── Adsterra chargé dynamiquement dans AdsterraContent ─────────────────
 
+  // ─── Pub centrée au démarrage (s'ouvre après 3s, avec croix) ──────────────
+  useEffect(() => {
+    if (isAdmin) return;
+    const t = setTimeout(() => setShowWelcomeAd(true), 3000);
+    return () => clearTimeout(t);
+  }, []);
+
+  // ─── Partage obligatoire après 2 messages ────────────────────────────────
+  useEffect(() => {
+    if (!hasShownShare2 && totalMsgCount >= 2 && !isAdmin) {
+      setShowShareAfter2(true);
+    }
+  }, [totalMsgCount]);
+
+  const confirmShare2 = () => {
+    localStorage.setItem('djiogo_share2', 'true');
+    setHasShownShare2(true);
+    setShowShareAfter2(false);
+    setNotification("🎉 Merci pour le partage !");
+  };
+
+  // ── Fonctionnalité 1 : Like/Unlike messages ──────────────────────────────
+  const toggleLike = (id: string) => {
+    setLikedMessages(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      localStorage.setItem('djiogo_likes', JSON.stringify(next));
+      return next;
+    });
+  };
+  // ── Fonctionnalité 2 : Épingler messages ─────────────────────────────────
+  const togglePin = (id: string) => {
+    setPinnedMessages(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      localStorage.setItem('djiogo_pins', JSON.stringify(next));
+      return next;
+    });
+  };
+  // ── Fonctionnalité 3 : Citation dans input ───────────────────────────────
+  const quoteMessage = (content: string) => {
+    const quoted = content.slice(0, 120).replace(/
+/g, ' ');
+    setQuotedText(quoted);
+    setInput(`> ${quoted}
+
+`);
+  };
+  // ── Fonctionnalité 4 : Mini-player flottant ─────────────────────────────
+  const openMiniPlayer = (content: string) => {
+    setMiniPlayerMsg(content);
+    setShowMiniPlayer(true);
+    speakMessage(content, 'mini');
+  };
+  // ── Fonctionnalité 5 : Résumer un message ───────────────────────────────
+  const summarizeMessage = (content: string) => {
+    handleSend(`Résume ce texte en 2-3 phrases max : "${content.slice(0, 500)}"`);
+  };
+  // ── Fonctionnalité 6 : Continuer un message ──────────────────────────────
+  const continueMessage = (content: string) => {
+    handleSend(`Continue et développe ce point : "${content.slice(-200)}"`);
+  };
+
   // ─── Bannière sidebar : apparaît 30s après ouverture ─────────────────────
   useEffect(() => {
     const t = setTimeout(() => setShowSidebarAd(true), 30000);
@@ -1710,34 +1784,115 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
   // ─── COMPOSANTS PUBLICITAIRES ADSTERRA ────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // ─── Composant Adsterra : charge le script + crée le div dynamiquement ────
+  // ─── AdsterraContent : injecte le script Adsterra dans un div dédié ───────
   const AdsterraContent = ({ adKey }: { adKey?: string }) => {
     const ref = useRef<HTMLDivElement>(null);
+    const loaded = useRef(false);
     useEffect(() => {
-      if (!ref.current) return;
-      // Vider le conteneur
+      if (!ref.current || loaded.current) return;
+      loaded.current = true;
       ref.current.innerHTML = '';
-      // Créer un div avec un ID unique pour cette instance
-      const containerId = `adsterra-${adKey || Math.random().toString(36).slice(2)}`;
+      // Div requis par Adsterra
       const container = document.createElement('div');
-      container.id = containerId;
+      container.id = 'container-d7f7ab8a0e3a094c17e3166e739e61d6';
       ref.current.appendChild(container);
-      // Charger / relancer le script Adsterra
-      const existing = document.getElementById('adsterra-main-script');
-      if (existing) existing.remove();
+      // Script invoke.js
       const s = document.createElement('script');
-      s.id = 'adsterra-main-script';
       s.async = true;
       s.setAttribute('data-cfasync', 'false');
       s.src = 'https://pl28904296.effectivegatecpm.com/d7f7ab8a0e3a094c17e3166e739e61d6/invoke.js';
-      document.head.appendChild(s);
-    }, [adKey]);
+      ref.current.appendChild(s);
+    }, []);
     return (
-      <div ref={ref} className="w-full min-h-[100px] flex items-center justify-center">
-        <span className="text-[9px] text-white/10 uppercase tracking-widest">Publicité</span>
+      <div ref={ref} className="w-full min-h-[90px] flex items-center justify-center">
+        <span className="text-[8px] text-white/10 uppercase tracking-widest">Chargement pub...</span>
       </div>
     );
   };
+
+  // ─── Modale pub de bienvenue (centre écran, 3s après ouverture, avec ✕) ───
+  const WelcomeAdModal = () => (
+    <AnimatePresence>
+      {showWelcomeAd && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[480] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(12px)' }}
+        >
+          <motion.div initial={{ scale: 0.85, y: 30 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.85, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 280, damping: 24 }}
+            className="relative w-full max-w-sm rounded-3xl overflow-hidden shadow-2xl"
+            style={{ background: 'linear-gradient(135deg,#0e0e1c,#12101f)', border: '1px solid rgba(99,102,241,0.3)' }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-white/30">Message de notre partenaire</span>
+              </div>
+              <button onClick={() => setShowWelcomeAd(false)}
+                className="w-7 h-7 rounded-full bg-white/5 hover:bg-white/15 flex items-center justify-center transition-colors">
+                <X className="w-3.5 h-3.5 text-white/50" />
+              </button>
+            </div>
+            {/* Pub */}
+            <div className="p-4">
+              <AdsterraContent adKey="welcome" />
+            </div>
+            {/* Bouton fermer en bas */}
+            <div className="px-5 pb-4">
+              <button onClick={() => setShowWelcomeAd(false)}
+                className="w-full py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 text-xs text-white/40 transition-colors border border-white/5">
+                Continuer vers Djiogo.ai →
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  // ─── Modal partage après 2 messages ──────────────────────────────────────
+  const ShareAfter2Modal = () => (
+    <AnimatePresence>
+      {showShareAfter2 && !hasShownShare2 && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[470] flex items-end justify-center p-4 pb-6"
+          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(10px)' }}
+        >
+          <motion.div initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+            className="w-full max-w-md rounded-3xl overflow-hidden shadow-2xl"
+            style={{ background: 'linear-gradient(135deg,#0e0e1c,#14101e)', border: '1px solid rgba(168,85,247,0.35)' }}
+          >
+            <div className="p-6 text-center">
+              <div className="text-4xl mb-3">🚀</div>
+              <h3 className="text-xl font-display font-bold mb-1">Tu aimes Djiogo.ai ?</h3>
+              <p className="text-sm text-white/40 mb-5 leading-relaxed">
+                Partage-le à tes contacts et aide-nous à grandir !
+              </p>
+              <div className="space-y-2.5">
+                <a href={`https://wa.me/?text=${encodeURIComponent("ces l'ia de FOUEGAP qu'il a programmé 🚀 https://int-lligence.vercel.app/")}`}
+                  target="_blank" rel="noopener noreferrer"
+                  onClick={confirmShare2}
+                  className="flex items-center justify-center gap-3 w-full py-3 rounded-2xl font-bold text-sm transition-all hover:scale-[1.02]"
+                  style={{ background: 'linear-gradient(135deg,#25d366,#128c7e)' }}>
+                  📱 Partager sur WhatsApp
+                </a>
+                <button onClick={() => { navigator.clipboard.writeText("ces l'ia de FOUEGAP qu'il a programmé 🚀 https://int-lligence.vercel.app/"); confirmShare2(); }}
+                  className="flex items-center justify-center gap-3 w-full py-3 rounded-2xl font-bold text-sm bg-white/5 border border-white/10 text-white/60 hover:bg-white/10 transition-all">
+                  <Copy className="w-4 h-4" /> Copier le lien
+                </button>
+                <button onClick={() => { setShowShareAfter2(false); setHasShownShare2(true); }}
+                  className="w-full py-2 text-[10px] text-white/20 hover:text-white/40 transition-colors">
+                  Plus tard
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 
   // ── Stratégie 1 : Modale pub toutes les 5 messages (non-bloquante) ─────────
   const AdModal = () => (
@@ -1907,9 +2062,33 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
       <AnimatePresence>{showPricing && <PricingModal />}</AnimatePresence>
 
       {/* ═══ PUBLICITÉS ADSTERRA ══════════════════════════════════════════ */}
+      <WelcomeAdModal />
+      <ShareAfter2Modal />
       <AdModal />
       <RewardedAdModal />
       <AdToast />
+
+      {/* ═══ MINI PLAYER FLOTTANT (Fonctionnalité 4) ═══════════════════════ */}
+      <AnimatePresence>
+        {showMiniPlayer && miniPlayerMsg && (
+          <motion.div initial={{ opacity: 0, x: 100 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 100 }}
+            className="fixed bottom-32 right-4 z-[350] w-64 rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: '#0e0e1c', border: '1px solid rgba(99,102,241,0.3)' }}
+          >
+            <div className="flex items-center justify-between px-4 py-2 border-b border-white/5">
+              <div className="flex items-center gap-2">
+                <Volume2 className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                <span className="text-[10px] font-bold text-white/60">Lecture en cours</span>
+              </div>
+              <button onClick={() => { window.speechSynthesis.cancel(); setShowMiniPlayer(false); }}
+                className="text-white/30 hover:text-white/60"><X className="w-3.5 h-3.5" /></button>
+            </div>
+            <div className="p-3">
+              <p className="text-[10px] text-white/40 line-clamp-3 leading-relaxed">{miniPlayerMsg.slice(0, 120)}...</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ═══ TUTORIAL OVERLAY ══════════════════════════════════════════════ */}
       <AnimatePresence>
@@ -2994,15 +3173,6 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
               Djiogo.ai • Powered by Groq LPU™ • Gomez.ai Ecosystem
             </p>
 
-            {/* ── Pub fixe toujours visible sous la zone de saisie ────── */}
-            {!isAdmin && (
-              <div className="mt-2 rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.05)' }}>
-                <div className="flex items-center justify-between px-3 py-1 border-b border-white/5">
-                  <span className="text-[8px] text-white/15 uppercase tracking-widest font-bold">Sponsorisé</span>
-                </div>
-                <AdsterraContent adKey="bottom-fixed" />
-              </div>
-            )}
           </div>
         </div>
       </main>
