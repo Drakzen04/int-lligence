@@ -553,6 +553,19 @@ export default function App() {
   const [shareConfirmed, setShareConfirmed] = useState(() => localStorage.getItem('djiogo_shared') === 'true');
   // Request counter for share gate
   const requestCountRef = useRef(parseInt(localStorage.getItem('djiogo_req_count') || '0'));
+
+  // ─── États publicitaires Adsterra ─────────────────────────────────────────
+  const [showAdModal, setShowAdModal] = useState(false);          // pub inline modale
+  const [adStep, setAdStep] = useState<'banner'|'rewarded'|null>(null); // type pub en cours
+  const [msgCountSinceAd, setMsgCountSinceAd] = useState(0);     // compteur msgs entre pubs
+  const [totalMsgCount, setTotalMsgCount] = useState(() => parseInt(localStorage.getItem('djiogo_total_msgs') || '0'));
+  const [imgCountSinceAd, setImgCountSinceAd] = useState(0);     // images depuis dernière pub
+  const [adSeen, setAdSeen] = useState(false);                    // pub vue sur ce cycle
+  const [showSidebarAd, setShowSidebarAd] = useState(false);      // bannière sidebar
+  const [showRewardedAd, setShowRewardedAd] = useState(false);    // pub récompensée
+  const [rewardedCountdown, setRewardedCountdown] = useState(5);  // compte à rebours pub
+  const [pendingReward, setPendingReward] = useState<null|string>(null); // récompense en attente
+  const adContainerRef = useRef<HTMLDivElement>(null);
   // Code preview modal
   const [codePreview, setCodePreview] = useState<{code: string; lang: string} | null>(null);
   // ─────────────────────────────────────────────────────────────────────────
@@ -678,20 +691,6 @@ export default function App() {
 
   useEffect(() => { scrollToBottom(); }, [messages]);
 
-  // ─── Précharger Puter.js au démarrage si pas encore dans index.html ──────
-  useEffect(() => {
-    if (!(window as any).puter) {
-      // Vérifier si le script est déjà dans le DOM
-      const existing = document.querySelector('script[src*="puter.com"]');
-      if (!existing) {
-        const s = document.createElement('script');
-        s.src = 'https://js.puter.com/v2/';
-        s.async = true;
-        document.head.appendChild(s);
-      }
-    }
-  }, []);
-
   // ─── Mobile viewport fix (prevent resize on virtual keyboard / code blocks) ──
   useEffect(() => {
     const metaViewport = document.querySelector('meta[name=viewport]');
@@ -716,8 +715,7 @@ export default function App() {
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  // ─── Génération d'images via Puter.js (FLUX Schnell ~2-4s, sans clé API) ──
-  // ─── Helper: blob/URL → base64 dataURL ──────────────────────────────────
+  // ─── Helper: blob → base64 dataURL ──────────────────────────────────────
   const toBase64 = (blob: Blob): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -726,35 +724,8 @@ export default function App() {
       reader.readAsDataURL(blob);
     });
 
-  // ─── Génération d'images via Puter.js (FLUX Schnell ~2-4s) ───────────────
+  // ─── Génération d'images via Pollinations (gratuit, sans compte) ──────────
   const generateImageFast = async (prompt: string): Promise<string> => {
-
-    // ── Attendre que Puter.js soit prêt (chargé depuis index.html) ──────────
-    let puter = (window as any).puter;
-    if (!puter?.ai?.txt2img) {
-      // Attendre max 5s que le script se charge
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 500));
-        puter = (window as any).puter;
-        if (puter?.ai?.txt2img) break;
-      }
-    }
-
-    // ── Puter.js disponible → FLUX Schnell (le plus rapide) ─────────────────
-    if (puter?.ai?.txt2img) {
-      try {
-        const img = await puter.ai.txt2img(prompt, false);
-        if (img?.src) {
-          if (img.src.startsWith('data:')) return img.src;
-          const res = await fetch(img.src);
-          return await toBase64(await res.blob());
-        }
-      } catch (e) {
-        console.warn('Puter.js failed, falling back to Pollinations:', e);
-      }
-    }
-
-    // ── Fallback : Pollinations FLUX + Turbo en parallèle ───────────────────
     const encoded = encodeURIComponent(prompt);
     const seed = Math.floor(Math.random() * 999999);
 
@@ -959,6 +930,8 @@ export default function App() {
       if (isAutoSpeak) {
         speakMessage(assistantMessage.content, assistantMessage.id);
       }
+      // ── Déclencher pub après chaque message ──────────────────────────────
+      triggerAdIfNeeded('message');
     } catch (error: any) {
       if (error.name === 'AbortError' || controller.signal.aborted) return;
       console.error('Groq API Error:', error);
@@ -1679,6 +1652,233 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
     setNotification("🎉 Merci ! Accès illimité débloqué !");
   };
 
+  // ─── Charger le script Adsterra une seule fois ─────────────────────────────
+  useEffect(() => {
+    if (document.querySelector('script[src*="effectivegatecpm"]')) return;
+    const s = document.createElement('script');
+    s.async = true;
+    s.setAttribute('data-cfasync', 'false');
+    s.src = 'https://pl28904296.effectivegatecpm.com/d7f7ab8a0e3a094c17e3166e739e61d6/invoke.js';
+    document.head.appendChild(s);
+  }, []);
+
+  // ─── Bannière sidebar : apparaît 30s après ouverture ─────────────────────
+  useEffect(() => {
+    const t = setTimeout(() => setShowSidebarAd(true), 30000);
+    return () => clearTimeout(t);
+  }, []);
+
+  // ─── Pub récompensée : compte à rebours avant fermeture ──────────────────
+  useEffect(() => {
+    if (!showRewardedAd) return;
+    setRewardedCountdown(5);
+    const interval = setInterval(() => {
+      setRewardedCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [showRewardedAd]);
+
+  // ─── Déclencher pub selon les règles ─────────────────────────────────────
+  const triggerAdIfNeeded = (context: 'message' | 'image') => {
+    if (isAdmin) return;
+    const newTotal = totalMsgCount + 1;
+    setTotalMsgCount(newTotal);
+    localStorage.setItem('djiogo_total_msgs', String(newTotal));
+
+    if (context === 'message') {
+      const newCount = msgCountSinceAd + 1;
+      setMsgCountSinceAd(newCount);
+      // Règle 1 : après le 1er message → pub discrète bannière sidebar
+      if (newTotal === 1) { setShowSidebarAd(true); return; }
+      // Règle 2 : toutes les 5 messages → modale pub
+      if (newCount >= 5) {
+        setMsgCountSinceAd(0);
+        setAdStep('banner');
+        setShowAdModal(true);
+      }
+    }
+    if (context === 'image') {
+      const newImgCount = imgCountSinceAd + 1;
+      setImgCountSinceAd(newImgCount);
+      // Règle 3 : après 2 images → pub récompensée
+      if (newImgCount >= 2) {
+        setImgCountSinceAd(0);
+        setShowRewardedAd(true);
+      }
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ─── COMPOSANTS PUBLICITAIRES ADSTERRA ────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Contenu Adsterra réel (div invoke.js)
+  const AdsterraContent = () => (
+    <div id="container-d7f7ab8a0e3a094c17e3166e739e61d6" className="w-full flex justify-center" />
+  );
+
+  // ── Stratégie 1 : Modale pub toutes les 5 messages (non-bloquante) ─────────
+  const AdModal = () => (
+    <AnimatePresence>
+      {showAdModal && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[450] flex items-end justify-center p-4 pb-8"
+          style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}
+        >
+          <motion.div
+            initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+            className="w-full max-w-lg rounded-3xl overflow-hidden"
+            style={{ background: 'linear-gradient(135deg,#0e0e1c,#14101e)', border: '1px solid rgba(99,102,241,0.3)' }}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Message sponsorisé</span>
+              </div>
+              <button
+                onClick={() => setShowAdModal(false)}
+                className="px-3 py-1 rounded-full bg-white/5 hover:bg-white/10 text-[10px] text-white/50 transition-colors"
+              >
+                Fermer ✕
+              </button>
+            </div>
+            <div className="p-4">
+              <AdsterraContent />
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  // ── Stratégie 2 : Pub récompensée avant image (5s skip) ───────────────────
+  const RewardedAdModal = () => (
+    <AnimatePresence>
+      {showRewardedAd && (
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[460] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(16px)' }}
+        >
+          <motion.div
+            initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
+            className="w-full max-w-md rounded-3xl overflow-hidden"
+            style={{ background: '#0e0e1c', border: '1px solid rgba(168,85,247,0.3)' }}
+          >
+            <div className="px-5 py-4 flex items-center justify-between border-b border-white/5">
+              <div>
+                <p className="text-sm font-bold text-white">🎁 Pub courte = image gratuite</p>
+                <p className="text-[10px] text-white/40">Patiente {rewardedCountdown}s pour débloquer la génération</p>
+              </div>
+              {rewardedCountdown === 0 ? (
+                <button
+                  onClick={() => { setShowRewardedAd(false); setPendingReward('image'); }}
+                  className="px-4 py-2 rounded-xl bg-indigo-500 text-white text-xs font-bold hover:bg-indigo-600 transition-colors"
+                >
+                  Continuer →
+                </button>
+              ) : (
+                <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                  style={{ background: 'conic-gradient(#6366f1 0%, rgba(255,255,255,0.1) 0%)', border: '2px solid rgba(99,102,241,0.3)' }}>
+                  <span className="text-sm font-bold text-indigo-400">{rewardedCountdown}</span>
+                </div>
+              )}
+            </div>
+            <div className="p-4 min-h-[150px] flex items-center justify-center">
+              <AdsterraContent />
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  // ── Stratégie 3 : Bannière flottante sidebar (apparaît après 30s) ─────────
+  const SidebarAdBanner = () => (
+    <AnimatePresence>
+      {showSidebarAd && (
+        <motion.div
+          initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+          className="mx-4 mb-3 rounded-2xl overflow-hidden"
+          style={{ border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(10,10,20,0.8)' }}
+        >
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5">
+            <span className="text-[8px] font-bold uppercase tracking-widest text-white/20">Sponsorisé</span>
+            <button onClick={() => setShowSidebarAd(false)} className="text-white/20 hover:text-white/50 text-xs">✕</button>
+          </div>
+          <div className="p-2">
+            <AdsterraContent />
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  // ── Stratégie 4 : Bannière inline entre messages (toutes les 5 réponses) ──
+  const InlineAdBanner = ({ index }: { index: number }) => {
+    const filteredMessages = messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()));
+    if (!isAdmin && index > 0 && index % 5 === 0 && filteredMessages[index]?.role === 'assistant') {
+      return (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+          className="my-4 rounded-2xl overflow-hidden"
+          style={{ border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}
+        >
+          <div className="px-4 py-2 flex items-center gap-2 border-b border-white/5">
+            <div className="w-1.5 h-1.5 rounded-full bg-indigo-500/50" />
+            <span className="text-[8px] font-bold uppercase tracking-widest text-white/15">Contenu sponsorisé</span>
+          </div>
+          <div className="p-3 flex justify-center">
+            <AdsterraContent />
+          </div>
+        </motion.div>
+      );
+    }
+    return null;
+  };
+
+  // ── Stratégie 5 : Notification pub douce (push style) ─────────────────────
+  const AdToast = () => {
+    const [showAdToast, setShowAdToast] = useState(false);
+    useEffect(() => {
+      if (isAdmin) return;
+      const interval = setInterval(() => {
+        setShowAdToast(true);
+        setTimeout(() => setShowAdToast(false), 8000);
+      }, 120000); // toutes les 2 minutes
+      return () => clearInterval(interval);
+    }, []);
+    return (
+      <AnimatePresence>
+        {showAdToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 80 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 80 }}
+            className="fixed bottom-28 left-4 z-[300] max-w-[280px] rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: '#0e0e1c', border: '1px solid rgba(99,102,241,0.25)' }}
+          >
+            <div className="px-3 py-2 flex items-center justify-between border-b border-white/5">
+              <span className="text-[8px] font-bold uppercase tracking-widest text-white/20">Partenaire</span>
+              <button onClick={() => setShowAdToast(false)} className="text-white/20 hover:text-white/50 text-xs">✕</button>
+            </div>
+            <div className="p-2">
+              <AdsterraContent />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+
   return (
     <div className={cn(
       "flex overflow-hidden font-sans transition-all duration-700",
@@ -1689,6 +1889,11 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
       fontSize === 'xs' ? "text-xs" : fontSize === 'sm' ? "text-sm" : fontSize === 'base' ? "text-base" : "text-lg"
     )} style={{ height: 'calc(var(--real-vh, 1vh) * 100)' }}>
       <AnimatePresence>{showPricing && <PricingModal />}</AnimatePresence>
+
+      {/* ═══ PUBLICITÉS ADSTERRA ══════════════════════════════════════════ */}
+      <AdModal />
+      <RewardedAdModal />
+      <AdToast />
 
       {/* ═══ TUTORIAL OVERLAY ══════════════════════════════════════════════ */}
       <AnimatePresence>
@@ -2444,7 +2649,9 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
                 </div>
               </motion.div>
             ) : (
-              messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).map((message) => (
+              messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).map((message, index) => (
+                <>
+                <InlineAdBanner index={index} key={`ad-${message.id}`} />
                 <motion.div key={message.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={cn("flex gap-4 group", message.role === 'user' ? "flex-row-reverse" : "flex-row")}>
                   <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-1", message.role === 'user' ? "bg-white/10" : "bg-gradient-to-br from-indigo-500 to-purple-600")}>
                     {message.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
@@ -2575,6 +2782,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
                     )}
                   </div>
                 </motion.div>
+                </>
               ))
             )}
 
