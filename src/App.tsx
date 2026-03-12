@@ -1652,15 +1652,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
     setNotification("🎉 Merci ! Accès illimité débloqué !");
   };
 
-  // ─── Charger le script Adsterra une seule fois ─────────────────────────────
-  useEffect(() => {
-    if (document.querySelector('script[src*="effectivegatecpm"]')) return;
-    const s = document.createElement('script');
-    s.async = true;
-    s.setAttribute('data-cfasync', 'false');
-    s.src = 'https://pl28904296.effectivegatecpm.com/d7f7ab8a0e3a094c17e3166e739e61d6/invoke.js';
-    document.head.appendChild(s);
-  }, []);
+  // ─── Adsterra chargé dynamiquement dans AdsterraContent ─────────────────
 
   // ─── Bannière sidebar : apparaît 30s après ouverture ─────────────────────
   useEffect(() => {
@@ -1718,10 +1710,34 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
   // ─── COMPOSANTS PUBLICITAIRES ADSTERRA ────────────────────────────────────
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // Contenu Adsterra réel (div invoke.js)
-  const AdsterraContent = () => (
-    <div id="container-d7f7ab8a0e3a094c17e3166e739e61d6" className="w-full flex justify-center" />
-  );
+  // ─── Composant Adsterra : charge le script + crée le div dynamiquement ────
+  const AdsterraContent = ({ adKey }: { adKey?: string }) => {
+    const ref = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+      if (!ref.current) return;
+      // Vider le conteneur
+      ref.current.innerHTML = '';
+      // Créer un div avec un ID unique pour cette instance
+      const containerId = `adsterra-${adKey || Math.random().toString(36).slice(2)}`;
+      const container = document.createElement('div');
+      container.id = containerId;
+      ref.current.appendChild(container);
+      // Charger / relancer le script Adsterra
+      const existing = document.getElementById('adsterra-main-script');
+      if (existing) existing.remove();
+      const s = document.createElement('script');
+      s.id = 'adsterra-main-script';
+      s.async = true;
+      s.setAttribute('data-cfasync', 'false');
+      s.src = 'https://pl28904296.effectivegatecpm.com/d7f7ab8a0e3a094c17e3166e739e61d6/invoke.js';
+      document.head.appendChild(s);
+    }, [adKey]);
+    return (
+      <div ref={ref} className="w-full min-h-[100px] flex items-center justify-center">
+        <span className="text-[9px] text-white/10 uppercase tracking-widest">Publicité</span>
+      </div>
+    );
+  };
 
   // ── Stratégie 1 : Modale pub toutes les 5 messages (non-bloquante) ─────────
   const AdModal = () => (
@@ -1751,7 +1767,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
               </button>
             </div>
             <div className="p-4">
-              <AdsterraContent />
+              <AdsterraContent adKey={Date.now().toString()} />
             </div>
           </motion.div>
         </motion.div>
@@ -1793,7 +1809,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
               )}
             </div>
             <div className="p-4 min-h-[150px] flex items-center justify-center">
-              <AdsterraContent />
+              <AdsterraContent adKey={Date.now().toString()} />
             </div>
           </motion.div>
         </motion.div>
@@ -1815,7 +1831,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
             <button onClick={() => setShowSidebarAd(false)} className="text-white/20 hover:text-white/50 text-xs">✕</button>
           </div>
           <div className="p-2">
-            <AdsterraContent />
+            <AdsterraContent adKey={Date.now().toString()} />
           </div>
         </motion.div>
       )}
@@ -1837,7 +1853,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
             <span className="text-[8px] font-bold uppercase tracking-widest text-white/15">Contenu sponsorisé</span>
           </div>
           <div className="p-3 flex justify-center">
-            <AdsterraContent />
+            <AdsterraContent adKey={Date.now().toString()} />
           </div>
         </motion.div>
       );
@@ -1869,7 +1885,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
               <button onClick={() => setShowAdToast(false)} className="text-white/20 hover:text-white/50 text-xs">✕</button>
             </div>
             <div className="p-2">
-              <AdsterraContent />
+              <AdsterraContent adKey={Date.now().toString()} />
             </div>
           </motion.div>
         )}
@@ -2977,6 +2993,16 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
             <p className="text-[8px] md:text-[9px] text-center text-white/10 mt-3 uppercase tracking-[0.2em] font-bold">
               Djiogo.ai • Powered by Groq LPU™ • Gomez.ai Ecosystem
             </p>
+
+            {/* ── Pub fixe toujours visible sous la zone de saisie ────── */}
+            {!isAdmin && (
+              <div className="mt-2 rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.05)' }}>
+                <div className="flex items-center justify-between px-3 py-1 border-b border-white/5">
+                  <span className="text-[8px] text-white/15 uppercase tracking-widest font-bold">Sponsorisé</span>
+                </div>
+                <AdsterraContent adKey="bottom-fixed" />
+              </div>
+            )}
           </div>
         </div>
       </main>
