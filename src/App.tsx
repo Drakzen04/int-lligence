@@ -1472,7 +1472,7 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
   // ⑤ RECHERCHE WEB SIMULÉE — enrichit le prompt avec contexte de recherche
   const triggerWebSearch = () => {
     if (!webSearchQuery.trim()) return;
-    handleSend(\`Réponds à cette question en utilisant tes connaissances comme si tu avais fait une recherche web approfondie en \${new Date().getFullYear()}. Donne des informations récentes et factuelles : \${webSearchQuery}\`);
+    handleSend(`Réponds à cette question en utilisant tes connaissances comme si tu avais fait une recherche web approfondie en ${new Date().getFullYear()}. Donne des informations récentes et factuelles : ${webSearchQuery}`);
     setWebSearchQuery('');
     setShowWebSearch(false);
   };
