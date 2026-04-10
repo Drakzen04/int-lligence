@@ -682,7 +682,7 @@ export default function App() {
 
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 768);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [accentColor, setAccentColor] = useState('indigo');
   const [isSpeaking, setIsSpeaking] = useState<string | null>(null);
