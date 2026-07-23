@@ -14,7 +14,8 @@ import {
   Clock, BrainCircuit, Quote, Save, FileDown, Activity, Smile, Settings,
   FolderOpen, ShieldCheck, Wand2, X, Check, Palette, Copy, Square, Type,
   Play, Heart, Bookmark, Share2, Maximize2, Minimize2, RefreshCw,
-  BarChart2, Eye, Code2, Terminal, Globe, Lightbulb, BookOpen, Layers
+  BarChart2, Eye, Code2, Terminal, Globe, Lightbulb, BookOpen, Layers,
+  Hash, AlertCircle
 } from "lucide-react";
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
