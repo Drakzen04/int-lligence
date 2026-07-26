@@ -15,7 +15,7 @@ import {
   FolderOpen, ShieldCheck, Wand2, X, Check, Palette, Copy, Square, Type,
   Play, Heart, Bookmark, Share2, Maximize2, Minimize2, RefreshCw,
   BarChart2, Eye, Code2, Terminal, Globe, Lightbulb, BookOpen, Layers,
-  Hash, AlertCircle
+  Hash, AlertCircle, Film, Clapperboard
 } from "lucide-react";
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -537,6 +537,23 @@ export default function App() {
   const [studioLoading, setStudioLoading] = useState(false);
   const [studioProgress, setStudioProgress] = useState(0);
   const [showStats, setShowStats] = useState(false);
+
+  // ─── Studio Vidéo IA (diaporama animé + narration, 100% gratuit) ─────────
+  const [showVideoStudio, setShowVideoStudio] = useState(false);
+  const [videoTopic, setVideoTopic] = useState('');
+  const [videoSceneCount, setVideoSceneCount] = useState(5);
+  const [videoScenes, setVideoScenes] = useState<{ narration: string; imagePrompt: string; imageDataUrl?: string }[]>([]);
+  const [videoGenerating, setVideoGenerating] = useState(false);
+  const [videoGenStep, setVideoGenStep] = useState('');
+  const [videoGenProgress, setVideoGenProgress] = useState(0);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const videoCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoPlayStateRef = useRef({ playing: false, sceneIndex: 0 });
+  const videoMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+  const videoImagesCacheRef = useRef<Record<number, HTMLImageElement>>({});
 
   // ─── NEW FEATURES STATE ──────────────────────────────────────────────────
   // Tutorial
@@ -1708,6 +1725,296 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
   };
 
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ─── STUDIO VIDÉO IA — Diaporama animé + narration (100% gratuit) ────────
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Génère le storyboard (scènes + prompts d'images) via Groq, puis les images via Pollinations
+  const generateVideoStoryboard = async () => {
+    if (!videoTopic.trim() || videoGenerating) return;
+    if (!GROQ_API_KEY || GROQ_API_KEY.length < 10) {
+      setNotification("⚠️ Clé API Groq manquante.");
+      return;
+    }
+    setVideoGenerating(true);
+    setVideoScenes([]);
+    setRecordedVideoUrl(null);
+    setVideoGenStep('Écriture du scénario...');
+    setVideoGenProgress(5);
+    try {
+      const groq = getGroqClient();
+      const system = `Tu es un générateur de storyboard vidéo professionnel. Réponds STRICTEMENT avec un objet JSON valide, sans aucun texte avant ou après, sans balises markdown. Format exact :
+{"scenes":[{"narration":"...","imagePrompt":"..."}]}
+Règles :
+- Génère exactement ${videoSceneCount} scènes.
+- "narration" : 1 à 2 phrases courtes EN FRANÇAIS, naturelles à l'oral, qui racontent une histoire cohérente sur le sujet donné (progression logique scène après scène).
+- "imagePrompt" : description visuelle détaillée EN ANGLAIS pour un générateur d'images IA, cinématographique, sans texte ni logo ni sous-titres dans l'image.`;
+
+      const completion = await groq.chat.completions.create({
+        model: GROQ_TEXT_MODEL,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `Sujet de la vidéo : ${videoTopic}` },
+        ],
+        max_tokens: 2048,
+        temperature: 0.8,
+        stream: false,
+      });
+
+      let raw = completion.choices[0]?.message?.content || '';
+      raw = raw.replace(/```json|```/g, '').trim();
+      const firstBrace = raw.indexOf('{');
+      const lastBrace = raw.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) raw = raw.slice(firstBrace, lastBrace + 1);
+      const parsed = JSON.parse(raw);
+
+      const scenes = (parsed.scenes || []).slice(0, videoSceneCount).map((s: any) => ({
+        narration: String(s.narration || '').trim(),
+        imagePrompt: String(s.imagePrompt || '').trim(),
+      }));
+      if (scenes.length === 0) throw new Error('Aucune scène générée');
+
+      setVideoScenes(scenes);
+      setVideoGenProgress(15);
+
+      const withImages = [...scenes];
+      for (let i = 0; i < withImages.length; i++) {
+        setVideoGenStep(`Génération de l'image ${i + 1}/${withImages.length}...`);
+        try {
+          const dataUrl = await generateImageFast(withImages[i].imagePrompt);
+          withImages[i] = { ...withImages[i], imageDataUrl: dataUrl };
+        } catch {
+          withImages[i] = { ...withImages[i], imageDataUrl: undefined };
+        }
+        setVideoScenes([...withImages]);
+        setVideoGenProgress(15 + Math.round(((i + 1) / withImages.length) * 80));
+      }
+      setVideoGenStep('Terminé !');
+      setVideoGenProgress(100);
+      setNotification("🎬 Storyboard vidéo prêt !");
+    } catch (err) {
+      console.error(err);
+      setNotification("❌ Erreur lors de la génération du storyboard.");
+    } finally {
+      setVideoGenerating(false);
+      setTimeout(() => setVideoGenProgress(0), 1200);
+    }
+  };
+
+  const loadImageEl = (src: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+
+  const estimateNarrationDuration = (text: string) => {
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    return Math.max(2500, Math.min(9000, words * 420 + 800));
+  };
+
+  const wrapCanvasText = (ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
+    const words = text.split(' ');
+    let line = '';
+    const lines: string[] = [];
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + ' ';
+      if (ctx.measureText(testLine).width > maxWidth && n > 0) {
+        lines.push(line.trim());
+        line = words[n] + ' ';
+      } else {
+        line = testLine;
+      }
+    }
+    lines.push(line.trim());
+    const startY = y - (lines.length - 1) * lineHeight;
+    lines.forEach((l, i) => ctx.fillText(l, x, startY + i * lineHeight));
+  };
+
+  const drawVideoFrame = (
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    img: HTMLImageElement,
+    t: number,
+    narration: string,
+    sceneIdx: number,
+    totalScenes: number
+  ) => {
+    const W = canvas.width, H = canvas.height;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Effet Ken Burns : zoom progressif + léger déplacement
+    const scale = 1 + 0.14 * t;
+    const dx = Math.sin(sceneIdx) * 20 * t;
+    const dy = Math.cos(sceneIdx) * 10 * t;
+
+    const imgRatio = img.width / img.height;
+    const canvasRatio = W / H;
+    let drawW, drawH;
+    if (imgRatio > canvasRatio) {
+      drawH = H * scale;
+      drawW = drawH * imgRatio;
+    } else {
+      drawW = W * scale;
+      drawH = drawW / imgRatio;
+    }
+    const x = (W - drawW) / 2 + dx;
+    const y = (H - drawH) / 2 + dy;
+    ctx.drawImage(img, x, y, drawW, drawH);
+
+    // Vignette basse
+    const grad = ctx.createLinearGradient(0, H * 0.6, 0, H);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.75)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, H * 0.6, W, H * 0.4);
+
+    // Sous-titre
+    if (narration) {
+      ctx.font = 'bold 30px "Segoe UI", sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur = 8;
+      wrapCanvasText(ctx, narration, W / 2, H - 60, W - 160, 38);
+      ctx.shadowBlur = 0;
+    }
+
+    // Barre de progression globale
+    const totalProgress = (sceneIdx + t) / totalScenes;
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(0, 0, W, 5);
+    ctx.fillStyle = '#6366f1';
+    ctx.fillRect(0, 0, W * totalProgress, 5);
+  };
+
+  const playVideoScene = (index: number, onAllDone: () => void, canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    if (index >= videoScenes.length || !videoPlayStateRef.current.playing) {
+      if (index >= videoScenes.length) onAllDone();
+      return;
+    }
+    const scene = videoScenes[index];
+    videoPlayStateRef.current.sceneIndex = index;
+    if (!scene.imageDataUrl) { playVideoScene(index + 1, onAllDone, canvas); return; }
+
+    const render = (img: HTMLImageElement) => {
+      const duration = estimateNarrationDuration(scene.narration);
+      const start = performance.now();
+
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(scene.narration);
+        const frVoice = availableVoices.find(v => v.lang.startsWith('fr'));
+        if (frVoice) utter.voice = frVoice; else utter.lang = 'fr-FR';
+        utter.rate = 1;
+        window.speechSynthesis.speak(utter);
+      } catch {}
+
+      const frame = (now: number) => {
+        if (!videoPlayStateRef.current.playing) return;
+        const t = Math.min(1, (now - start) / duration);
+        drawVideoFrame(ctx, canvas, img, t, scene.narration, index, videoScenes.length);
+        if (t < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          playVideoScene(index + 1, onAllDone, canvas);
+        }
+      };
+      requestAnimationFrame(frame);
+    };
+
+    const cached = videoImagesCacheRef.current[index];
+    if (cached) render(cached);
+    else loadImageEl(scene.imageDataUrl).then(img => { videoImagesCacheRef.current[index] = img; render(img); }).catch(() => playVideoScene(index + 1, onAllDone, canvas));
+  };
+
+  const startVideoPreview = () => {
+    if (!videoCanvasRef.current || videoScenes.length === 0) return;
+    window.speechSynthesis.cancel();
+    videoPlayStateRef.current.playing = true;
+    setIsVideoPlaying(true);
+    playVideoScene(0, () => { setIsVideoPlaying(false); videoPlayStateRef.current.playing = false; }, videoCanvasRef.current);
+  };
+
+  const stopVideoPreview = () => {
+    videoPlayStateRef.current.playing = false;
+    setIsVideoPlaying(false);
+    window.speechSynthesis.cancel();
+  };
+
+  const startVideoRecording = async (mode: 'silent' | 'audio') => {
+    if (!videoCanvasRef.current || videoScenes.length === 0 || isRecordingVideo) return;
+    setRecordedVideoUrl(null);
+    let combinedStream: MediaStream;
+    try {
+      const canvasStream = (videoCanvasRef.current as any).captureStream(30);
+      if (mode === 'audio') {
+        setNotification("🖥️ Choisis 'Cet onglet' et coche 'Partager l'audio' dans la fenêtre du navigateur.");
+        const display = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: true });
+        const audioTracks = display.getAudioTracks();
+        display.getVideoTracks().forEach((t: MediaStreamTrack) => t.stop());
+        combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+      } else {
+        combinedStream = canvasStream;
+      }
+    } catch (err) {
+      setNotification("❌ Capture audio annulée/non supportée. Export silencieux utilisé.");
+      combinedStream = (videoCanvasRef.current as any).captureStream(30);
+    }
+
+    videoChunksRef.current = [];
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp9,opus' });
+    } catch {
+      recorder = new MediaRecorder(combinedStream);
+    }
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunksRef.current.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(videoChunksRef.current, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      setRecordedVideoUrl(url);
+      setIsRecordingVideo(false);
+      setNotification("✅ Vidéo prête à télécharger !");
+    };
+    videoMediaRecorderRef.current = recorder;
+    recorder.start();
+    setIsRecordingVideo(true);
+
+    videoPlayStateRef.current.playing = true;
+    setIsVideoPlaying(true);
+    playVideoScene(0, () => {
+      setIsVideoPlaying(false);
+      videoPlayStateRef.current.playing = false;
+      setTimeout(() => {
+        if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
+          videoMediaRecorderRef.current.stop();
+        }
+      }, 400);
+    }, videoCanvasRef.current);
+  };
+
+  const stopVideoRecordingManually = () => {
+    videoPlayStateRef.current.playing = false;
+    setIsVideoPlaying(false);
+    window.speechSynthesis.cancel();
+    if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
+      videoMediaRecorderRef.current.stop();
+    }
+  };
+
+  const downloadRecordedVideo = () => {
+    if (!recordedVideoUrl) return;
+    const a = document.createElement('a');
+    a.href = recordedVideoUrl;
+    a.download = `djiogo-video-${Date.now()}.webm`;
+    a.click();
+  };
+
   // ─── Tutorial steps ──────────────────────────────────────────────────────
   const TUTORIAL_STEPS = [
     {
@@ -2640,6 +2947,164 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
         )}
       </AnimatePresence>
 
+      {/* Studio Vidéo IA — diaporama animé + narration */}
+      <AnimatePresence>
+        {showVideoStudio && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4"
+            onClick={(e) => { if (e.target === e.currentTarget && !isVideoPlaying && !isRecordingVideo) setShowVideoStudio(false); }}
+          >
+            <motion.div initial={{ scale: 0.92, y: 24 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.92, y: 24 }}
+              className="w-full max-w-5xl max-h-[92vh] flex flex-col rounded-3xl overflow-hidden"
+              style={{ background: 'linear-gradient(135deg, #12061f 0%, #0a0a15 100%)', border: '1px solid rgba(236,72,153,0.25)' }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between p-6 border-b border-white/5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #ec4899, #6366f1)' }}>
+                    <Clapperboard className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="font-display font-bold text-lg">Studio Vidéo IA</h2>
+                    <p className="text-[10px] text-white/30 uppercase tracking-widest">Diaporama animé • Images + Narration • 100% Gratuit</p>
+                  </div>
+                </div>
+                <button onClick={() => { if (!isVideoPlaying && !isRecordingVideo) setShowVideoStudio(false); }} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-white/40" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <textarea
+                      value={videoTopic}
+                      onChange={e => setVideoTopic(e.target.value)}
+                      placeholder="Décris le sujet de ta vidéo... ex: l'histoire du café"
+                      className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-sm resize-none focus:outline-none focus:border-pink-500/60 transition-all placeholder:text-white/20 min-h-[60px]"
+                      rows={2}
+                    />
+                    <div className="flex sm:flex-col gap-2 shrink-0">
+                      <select value={videoSceneCount} onChange={e => setVideoSceneCount(parseInt(e.target.value))}
+                        className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white/70 focus:outline-none focus:border-pink-500/50">
+                        {[3,4,5,6,8].map(n => <option key={n} value={n}>{n} scènes</option>)}
+                      </select>
+                      <button onClick={generateVideoStoryboard} disabled={!videoTopic.trim() || videoGenerating}
+                        className={cn("px-5 py-2 rounded-xl font-bold text-xs flex items-center gap-2 justify-center transition-all",
+                          videoGenerating ? "bg-white/5 text-white/20 cursor-not-allowed" : "text-white shadow-lg hover:scale-105"
+                        )}
+                        style={!videoGenerating ? { background: 'linear-gradient(135deg, #ec4899, #6366f1)' } : {}}
+                      >
+                        {videoGenerating ? <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        <span>Générer</span>
+                      </button>
+                    </div>
+                  </div>
+                  {videoGenerating && (
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-[10px] text-white/40">
+                        <span>{videoGenStep}</span><span>{videoGenProgress}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                        <motion.div className="h-full rounded-full" style={{ background: 'linear-gradient(90deg, #ec4899, #6366f1)' }}
+                          animate={{ width: `${videoGenProgress}%` }} transition={{ duration: 0.4 }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {videoScenes.length > 0 && (
+                  <div className="grid md:grid-cols-2 gap-6">
+                    <div className="space-y-3">
+                      <div className="rounded-2xl overflow-hidden border border-white/10 bg-black">
+                        <canvas ref={videoCanvasRef} width={960} height={540} className="w-full h-auto block" />
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={isVideoPlaying ? stopVideoPreview : startVideoPreview}
+                          disabled={isRecordingVideo}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/30 transition-all disabled:opacity-30">
+                          {isVideoPlaying ? <><Square className="w-3.5 h-3.5 fill-current" /> Arrêter</> : <><Play className="w-3.5 h-3.5 fill-current" /> Aperçu avec narration</>}
+                        </button>
+                        <button onClick={() => startVideoRecording('silent')}
+                          disabled={isVideoPlaying || isRecordingVideo}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30 transition-all disabled:opacity-30">
+                          <Film className="w-3.5 h-3.5" /> Exporter (sous-titres)
+                        </button>
+                        <button onClick={() => startVideoRecording('audio')}
+                          disabled={isVideoPlaying || isRecordingVideo}
+                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-pink-500/20 border border-pink-500/40 text-pink-300 hover:bg-pink-500/30 transition-all disabled:opacity-30">
+                          <Mic className="w-3.5 h-3.5" /> Exporter avec narration
+                        </button>
+                        {isRecordingVideo && (
+                          <button onClick={stopVideoRecordingManually}
+                            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 transition-all">
+                            <Square className="w-3.5 h-3.5 fill-current" /> Arrêter l'enregistrement
+                          </button>
+                        )}
+                      </div>
+                      {isRecordingVideo && (
+                        <div className="flex items-center gap-2 text-[11px] text-rose-300">
+                          <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" /> Enregistrement en cours...
+                        </div>
+                      )}
+                      {recordedVideoUrl && (
+                        <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
+                          <span className="text-xs text-white/60">🎬 Vidéo prête !</span>
+                          <button onClick={downloadRecordedVideo}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500 text-white text-[11px] font-bold hover:bg-indigo-600 transition-all">
+                            <Download className="w-3 h-3" /> Télécharger
+                          </button>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-white/20 leading-relaxed">
+                        💡 "Exporter avec narration" te demande de partager <strong>cet onglet</strong> avec l'audio activé (case à cocher dans la fenêtre du navigateur). Sans cela, utilise l'export silencieux : les sous-titres restent brûlés dans l'image.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+                      {videoScenes.map((scene, i) => (
+                        <div key={i} className="flex gap-3 p-2 rounded-xl bg-white/5 border border-white/10">
+                          <div className="w-20 h-20 rounded-lg overflow-hidden shrink-0 bg-black/40 flex items-center justify-center">
+                            {scene.imageDataUrl ? (
+                              <img src={scene.imageDataUrl} alt={`Scène ${i + 1}`} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[9px] font-bold text-pink-400 uppercase tracking-widest mb-1">Scène {i + 1}</div>
+                            <textarea
+                              value={scene.narration}
+                              onChange={e => {
+                                const updated = [...videoScenes];
+                                updated[i] = { ...updated[i], narration: e.target.value };
+                                setVideoScenes(updated);
+                              }}
+                              className="w-full bg-transparent text-xs text-white/70 resize-none focus:outline-none border-b border-white/5 focus:border-pink-500/40 transition-colors"
+                              rows={2}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {videoScenes.length === 0 && !videoGenerating && (
+                  <div className="flex flex-col items-center justify-center py-16 text-center">
+                    <div className="w-16 h-16 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center mb-4">
+                      <Film className="w-8 h-8 text-white/20" />
+                    </div>
+                    <p className="text-white/30 text-sm">Décris un sujet pour générer ton storyboard vidéo</p>
+                    <p className="text-white/15 text-xs mt-1">Groq écrit le script, Pollinations dessine les scènes</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Mascot */}
       <motion.div drag dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }} className="fixed bottom-24 right-8 z-[100] cursor-grab active:cursor-grabbing">
         <AnimatePresence>
@@ -3372,6 +3837,16 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
                 >
                   <ImagePlus className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Images</span>
+                </button>
+                {/* Studio Vidéo IA */}
+                <button
+                  onClick={() => setShowVideoStudio(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs text-white shadow-lg hover:scale-105 active:scale-95 transition-all"
+                  style={{ background: 'linear-gradient(135deg, #ec4899, #6366f1)' }}
+                  title="Studio Vidéo IA"
+                >
+                  <Film className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Vidéo</span>
                 </button>
                 {/* ① Bibliothèque prompts */}
                 <button onClick={() => setShowPromptLib(true)} title="Bibliothèque de prompts"
