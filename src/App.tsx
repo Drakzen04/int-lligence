@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, Component } from 'react';
 import Groq from 'groq-sdk';
 import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from "motion/react";
 import { jsPDF } from "jspdf";
@@ -478,6 +478,43 @@ const GROQ_TEXT_MODEL = 'llama-3.3-70b-versatile';
 // Modèle vision (pour analyser les images)
 const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
+// ─── ErrorBoundary — empêche l'écran blanc en cas d'erreur JS non gérée ───
+class ErrorBoundary extends Component<{ children: any }, { hasError: boolean; message: string }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, message: error?.message || 'Erreur inconnue' };
+  }
+  componentDidCatch(error: any, info: any) {
+    console.error('Djiogo.ai — erreur interceptée par ErrorBoundary:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          background: '#050505', color: '#fff', fontFamily: 'sans-serif', padding: '24px', textAlign: 'center', gap: '16px'
+        }}>
+          <div style={{ fontSize: '40px' }}>⚠️</div>
+          <h2 style={{ fontSize: '20px', fontWeight: 700 }}>Oups, une erreur est survenue</h2>
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', maxWidth: '420px' }}>
+            {this.state.message}
+          </p>
+          <button
+            onClick={() => { this.setState({ hasError: false, message: '' }); window.location.reload(); }}
+            style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)', color: '#fff', border: 'none', borderRadius: '12px', padding: '10px 24px', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}
+          >
+            Recharger l'application
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>(() => {
     const saved = localStorage.getItem('djiogo_messages');
@@ -554,6 +591,21 @@ export default function App() {
   const videoMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const videoChunksRef = useRef<Blob[]>([]);
   const videoImagesCacheRef = useRef<Record<number, HTMLImageElement>>({});
+
+  // Nettoyage automatique : si le modal se ferme, on stoppe lecture/narration/enregistrement en cours
+  useEffect(() => {
+    if (!showVideoStudio) {
+      videoPlayStateRef.current.playing = false;
+      try { if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
+      try {
+        if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
+          videoMediaRecorderRef.current.stop();
+        }
+      } catch {}
+      setIsVideoPlaying(false);
+      setIsRecordingVideo(false);
+    }
+  }, [showVideoStudio]);
 
   // ─── NEW FEATURES STATE ──────────────────────────────────────────────────
   // Tutorial
@@ -1591,6 +1643,23 @@ IMPORTANT MODE VOCAL STRICT : Tu es en mode conversation orale. Réponds UNIQUEM
     }
   }, [notification]);
 
+  // Filet de sécurité : intercepte les erreurs globales et les promesses rejetées non gérées,
+  // pour éviter qu'une erreur silencieuse (ex: API navigateur indisponible) ne bloque l'app.
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      console.error('Erreur globale interceptée:', event.error || event.message);
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      console.error('Promesse rejetée non gérée:', event.reason);
+    };
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleRejection);
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleRejection);
+    };
+  }, []);
+
   const PricingModal = () => (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4">
       <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="bg-[#0a0a0f] border border-white/10 rounded-[2.5rem] max-w-4xl w-full overflow-hidden shadow-2xl shadow-indigo-500/10">
@@ -1891,79 +1960,123 @@ Règles :
   };
 
   const playVideoScene = (index: number, onAllDone: () => void, canvas: HTMLCanvasElement) => {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    if (index >= videoScenes.length || !videoPlayStateRef.current.playing) {
-      if (index >= videoScenes.length) onAllDone();
-      return;
-    }
-    const scene = videoScenes[index];
-    videoPlayStateRef.current.sceneIndex = index;
-    if (!scene.imageDataUrl) { playVideoScene(index + 1, onAllDone, canvas); return; }
+    try {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { onAllDone(); return; }
+      if (index >= videoScenes.length || !videoPlayStateRef.current.playing) {
+        if (index >= videoScenes.length) onAllDone();
+        return;
+      }
+      const scene = videoScenes[index];
+      if (!scene) { onAllDone(); return; }
+      videoPlayStateRef.current.sceneIndex = index;
+      if (!scene.imageDataUrl) { playVideoScene(index + 1, onAllDone, canvas); return; }
 
-    const render = (img: HTMLImageElement) => {
-      const duration = estimateNarrationDuration(scene.narration);
-      const start = performance.now();
+      const render = (img: HTMLImageElement) => {
+        const duration = estimateNarrationDuration(scene.narration);
+        const start = performance.now();
 
-      try {
-        window.speechSynthesis.cancel();
-        const utter = new SpeechSynthesisUtterance(scene.narration);
-        const frVoice = availableVoices.find(v => v.lang.startsWith('fr'));
-        if (frVoice) utter.voice = frVoice; else utter.lang = 'fr-FR';
-        utter.rate = 1;
-        window.speechSynthesis.speak(utter);
-      } catch {}
+        try {
+          if (typeof window !== 'undefined' && 'speechSynthesis' in window && scene.narration) {
+            window.speechSynthesis.cancel();
+            const utter = new SpeechSynthesisUtterance(scene.narration);
+            const frVoice = availableVoices.find(v => v.lang.startsWith('fr'));
+            if (frVoice) utter.voice = frVoice; else utter.lang = 'fr-FR';
+            utter.rate = 1;
+            window.speechSynthesis.speak(utter);
+          }
+        } catch (e) { console.error('Narration TTS error:', e); }
 
-      const frame = (now: number) => {
-        if (!videoPlayStateRef.current.playing) return;
-        const t = Math.min(1, (now - start) / duration);
-        drawVideoFrame(ctx, canvas, img, t, scene.narration, index, videoScenes.length);
-        if (t < 1) {
-          requestAnimationFrame(frame);
-        } else {
-          playVideoScene(index + 1, onAllDone, canvas);
-        }
+        const frame = (now: number) => {
+          try {
+            if (!videoPlayStateRef.current.playing) return;
+            const t = Math.min(1, (now - start) / duration);
+            drawVideoFrame(ctx, canvas, img, t, scene.narration, index, videoScenes.length);
+            if (t < 1) {
+              requestAnimationFrame(frame);
+            } else {
+              playVideoScene(index + 1, onAllDone, canvas);
+            }
+          } catch (e) {
+            console.error('Video frame render error:', e);
+            videoPlayStateRef.current.playing = false;
+            onAllDone();
+          }
+        };
+        requestAnimationFrame(frame);
       };
-      requestAnimationFrame(frame);
-    };
 
-    const cached = videoImagesCacheRef.current[index];
-    if (cached) render(cached);
-    else loadImageEl(scene.imageDataUrl).then(img => { videoImagesCacheRef.current[index] = img; render(img); }).catch(() => playVideoScene(index + 1, onAllDone, canvas));
+      const cached = videoImagesCacheRef.current[index];
+      if (cached) render(cached);
+      else loadImageEl(scene.imageDataUrl).then(img => { videoImagesCacheRef.current[index] = img; render(img); }).catch(() => playVideoScene(index + 1, onAllDone, canvas));
+    } catch (e) {
+      console.error('playVideoScene error:', e);
+      videoPlayStateRef.current.playing = false;
+      onAllDone();
+    }
   };
 
   const startVideoPreview = () => {
-    if (!videoCanvasRef.current || videoScenes.length === 0) return;
-    window.speechSynthesis.cancel();
-    videoPlayStateRef.current.playing = true;
-    setIsVideoPlaying(true);
-    playVideoScene(0, () => { setIsVideoPlaying(false); videoPlayStateRef.current.playing = false; }, videoCanvasRef.current);
+    try {
+      if (!videoCanvasRef.current || videoScenes.length === 0) return;
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+      videoPlayStateRef.current.playing = true;
+      setIsVideoPlaying(true);
+      playVideoScene(0, () => { setIsVideoPlaying(false); videoPlayStateRef.current.playing = false; }, videoCanvasRef.current);
+    } catch (e) {
+      console.error('startVideoPreview error:', e);
+      setIsVideoPlaying(false);
+      videoPlayStateRef.current.playing = false;
+      setNotification("❌ Impossible de lancer l'aperçu vidéo.");
+    }
   };
 
   const stopVideoPreview = () => {
     videoPlayStateRef.current.playing = false;
     setIsVideoPlaying(false);
-    window.speechSynthesis.cancel();
+    try { if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
   };
 
   const startVideoRecording = async (mode: 'silent' | 'audio') => {
     if (!videoCanvasRef.current || videoScenes.length === 0 || isRecordingVideo) return;
+
+    if (typeof MediaRecorder === 'undefined') {
+      setNotification("❌ Ton navigateur ne supporte pas l'enregistrement vidéo (MediaRecorder indisponible).");
+      return;
+    }
+    if (typeof (videoCanvasRef.current as any).captureStream !== 'function') {
+      setNotification("❌ Ton navigateur ne supporte pas la capture de canvas (captureStream indisponible).");
+      return;
+    }
+
     setRecordedVideoUrl(null);
     let combinedStream: MediaStream;
     try {
       const canvasStream = (videoCanvasRef.current as any).captureStream(30);
       if (mode === 'audio') {
-        setNotification("🖥️ Choisis 'Cet onglet' et coche 'Partager l'audio' dans la fenêtre du navigateur.");
-        const display = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: true });
-        const audioTracks = display.getAudioTracks();
-        display.getVideoTracks().forEach((t: MediaStreamTrack) => t.stop());
-        combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+        if (!navigator.mediaDevices || typeof (navigator.mediaDevices as any).getDisplayMedia !== 'function') {
+          setNotification("⚠️ Capture d'onglet non supportée ici. Export silencieux utilisé à la place.");
+          combinedStream = canvasStream;
+        } else {
+          setNotification("🖥️ Choisis 'Cet onglet' et coche 'Partager l'audio' dans la fenêtre du navigateur.");
+          const display = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: true });
+          const audioTracks = display.getAudioTracks ? display.getAudioTracks() : [];
+          if (display.getVideoTracks) display.getVideoTracks().forEach((t: MediaStreamTrack) => t.stop());
+          combinedStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+        }
       } else {
         combinedStream = canvasStream;
       }
     } catch (err) {
+      console.error('startVideoRecording stream error:', err);
       setNotification("❌ Capture audio annulée/non supportée. Export silencieux utilisé.");
-      combinedStream = (videoCanvasRef.current as any).captureStream(30);
+      try {
+        combinedStream = (videoCanvasRef.current as any).captureStream(30);
+      } catch (e2) {
+        console.error('captureStream fallback error:', e2);
+        setNotification("❌ Impossible de démarrer l'enregistrement.");
+        return;
+      }
     }
 
     videoChunksRef.current = [];
@@ -1971,39 +2084,65 @@ Règles :
     try {
       recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp9,opus' });
     } catch {
-      recorder = new MediaRecorder(combinedStream);
+      try {
+        recorder = new MediaRecorder(combinedStream);
+      } catch (e) {
+        console.error('MediaRecorder init error:', e);
+        setNotification("❌ Impossible d'initialiser l'enregistreur vidéo.");
+        return;
+      }
     }
     recorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunksRef.current.push(e.data); };
+    recorder.onerror = (e) => { console.error('MediaRecorder error:', e); setNotification("❌ Erreur pendant l'enregistrement."); };
     recorder.onstop = () => {
-      const blob = new Blob(videoChunksRef.current, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      setRecordedVideoUrl(url);
-      setIsRecordingVideo(false);
-      setNotification("✅ Vidéo prête à télécharger !");
+      try {
+        const blob = new Blob(videoChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        setRecordedVideoUrl(url);
+        setNotification("✅ Vidéo prête à télécharger !");
+      } catch (e) {
+        console.error('onstop blob error:', e);
+        setNotification("❌ Erreur lors de la finalisation de la vidéo.");
+      } finally {
+        setIsRecordingVideo(false);
+      }
     };
     videoMediaRecorderRef.current = recorder;
-    recorder.start();
-    setIsRecordingVideo(true);
 
-    videoPlayStateRef.current.playing = true;
-    setIsVideoPlaying(true);
-    playVideoScene(0, () => {
-      setIsVideoPlaying(false);
-      videoPlayStateRef.current.playing = false;
-      setTimeout(() => {
-        if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
-          videoMediaRecorderRef.current.stop();
-        }
-      }, 400);
-    }, videoCanvasRef.current);
+    try {
+      recorder.start();
+      setIsRecordingVideo(true);
+      videoPlayStateRef.current.playing = true;
+      setIsVideoPlaying(true);
+      playVideoScene(0, () => {
+        setIsVideoPlaying(false);
+        videoPlayStateRef.current.playing = false;
+        setTimeout(() => {
+          try {
+            if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
+              videoMediaRecorderRef.current.stop();
+            }
+          } catch (e) { console.error('recorder.stop error:', e); }
+        }, 400);
+      }, videoCanvasRef.current);
+    } catch (e) {
+      console.error('recorder.start error:', e);
+      setIsRecordingVideo(false);
+      setNotification("❌ Impossible de démarrer l'enregistrement.");
+    }
   };
 
   const stopVideoRecordingManually = () => {
     videoPlayStateRef.current.playing = false;
     setIsVideoPlaying(false);
-    window.speechSynthesis.cancel();
-    if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
-      videoMediaRecorderRef.current.stop();
+    try { if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
+    try {
+      if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== 'inactive') {
+        videoMediaRecorderRef.current.stop();
+      }
+    } catch (e) {
+      console.error('stopVideoRecordingManually error:', e);
+      setIsRecordingVideo(false);
     }
   };
 
@@ -2421,6 +2560,7 @@ Règles :
   // ═══════════════════════════════════════════════════════════════════════════
 
   return (
+    <ErrorBoundary>
     <div className={cn(
       "flex overflow-hidden font-sans transition-all duration-700",
       theme === 'dark' ? "dark bg-[#050505] text-white" :
@@ -4011,5 +4151,6 @@ Règles :
         )}
       </motion.div>
     </div>
+    </ErrorBoundary>
   );
 }
